@@ -18,42 +18,42 @@ own infrastructure at any time if needed.
 
 ```
                          ┌────────────────────────────────┐
-                         │       AWS API Gateway           │
-                         │  (REST API, rate limiting,      │
-                         │   API keys, throttling,         │
-                         │   built-in response caching)    │
+                         │       AWS API Gateway          │
+                         │  (REST API, rate limiting,     │
+                         │   API keys, throttling,        │
+                         │   built-in response caching)   │
                          └────────────┬───────────────────┘
                                       │
                          ┌────────────▼─────────────┐
-                         │      AWS Lambda           │
-                         │  (API handler functions)  │
-                         │   Node.js / TypeScript    │
+                         │      AWS Lambda          │
+                         │  (API handler functions) │
+                         │   Node.js / TypeScript   │
                          └────────────┬─────────────┘
                                       │
                                       │
-                         ┌────────────▼─────────────┐
-                         │     RDS PostgreSQL        │
+                         ┌────────────▼──────────────┐
+                         │     Rds PostgreSQL        │
                          │  (db.t4g.micro, Single-AZ)│
-                         └──────────────────────────┘
+                         └───────────────────────────┘
 
         ───── Data Ingestion (separate Lambda functions) ─────
 
-  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
   │  Horizon     │  │  Soroswap    │  │  Reflector   │  │  Soroban RPC │
   │  Trade Agg.  │  │  API         │  │  Oracle      │  │  (SEP-41)    │
   └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
          │                 │                 │                 │
          └────────┬────────┴────────┬────────┘                 │
-                  │                 │                           │
-         ┌────────▼─────────────────▼───────────────────────────▼──┐
+                  │                 │                          │
+         ┌────────▼─────────────────▼──────────────────────────▼───┐
          │        CloudWatch EventBridge Schedule (cron)           │
          │            triggers Lambda functions                    │
          │           "Price Ingestion Workers"                     │
          └─────────────────────────┬───────────────────────────────┘
                                    │
                           ┌────────▼────────┐
-                          │  RDS PostgreSQL  │
-                          │                  │
+                          │  RDS PostgreSQL │
+                          │                 │
                           └─────────────────┘
 ```
 
@@ -484,7 +484,7 @@ All scaling steps are non-destructive — instance class changes and Multi-AZ ca
 | API Framework | NestJS exposed with `@vendia/serverless-express` |
 | Database | PostgreSQL 16 (native range partitioning, no extensions) |
 | DB Connection | Direct Lambda→RDS (add RDS Proxy later if concurrency grows) |
-| ORM | Drizzle ORM (lightweight, tree-shakeable — better for Lambda bundle size than Prisma) |
+| ORM | TypeORM (lightweight, tree-shakeable — better for Lambda bundle size than Prisma) |
 | Stellar SDK | `@stellar/stellar-sdk` (Horizon client + Soroban RPC) |
 | Infrastructure | AWS CDK (TypeScript — same language as app code) |
 | Bundler | esbuild (fast bundling, tree-shaking for minimal Lambda packages) |
