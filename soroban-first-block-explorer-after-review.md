@@ -1,6 +1,27 @@
-# Stellar Block Explorer — Technical Design
+# Stellar Block Explorer — Technical Design (Post-Review)
 
-A production-grade, Soroban-first block explorer for the Stellar network. The system prioritizes **human-readable transaction display** and first-class Soroban smart contract support. The frontend communicates exclusively with a custom NestJS REST API, which sources chain data from Stellar Horizon — either via Horizon's REST API or by querying Horizon's PostgreSQL database directly.
+> This document supersedes `summary.md`. It incorporates changes required by reviewer
+> feedback: the indexing layer is rebuilt around self-hosted Galexie (direct ledger
+> processing) replacing the deprecated Horizon API, the block explorer now owns its own
+> database, and component ownership is explicitly demarcated.
+
+A production-grade, Soroban-first block explorer for the Stellar network. The system
+prioritizes **human-readable transaction display** and first-class Soroban smart contract
+support. The frontend communicates exclusively with a custom NestJS REST API, which sources
+chain data from the block explorer's own PostgreSQL database — populated by a Galexie-based
+ingestion pipeline that processes `LedgerCloseMeta` XDR directly from the Stellar network.
+
+---
+
+## Table of Contents
+
+1. [Frontend](#1-frontend)
+2. [Backend](#2-backend)
+3. [Infrastructure](#3-infrastructure)
+4. [Indexing Pipeline (Galexie)](#4-indexing-pipeline-galexie)
+5. [XDR Parsing](#5-xdr-parsing)
+6. [Database Schema](#6-database-schema)
+7. [Estimates](#7-estimates)
 
 ---
 
@@ -8,12 +29,16 @@ A production-grade, Soroban-first block explorer for the Stellar network. The sy
 
 ### 1.1 Goals
 
-- **Human-readable format** — Show exactly what occurred in each transaction. Users should understand payments, DEX operations, and Soroban contract calls without decoding XDR or raw operation codes.
-- **Classic + Soroban** — Support both classic Stellar operations (payments, offers, path payments, etc.) and Soroban operations (invoke host function, contract events, token swaps).
+- **Human-readable format** — Show exactly what occurred in each transaction. Users should
+  understand payments, DEX operations, and Soroban contract calls without decoding XDR or
+  raw operation codes.
+- **Classic + Soroban** — Support both classic Stellar operations (payments, offers, path
+  payments, etc.) and Soroban operations (invoke host function, contract events, token swaps).
 
 ### 1.2 Architecture
 
-The frontend is a React application served via CloudFront CDN. It consumes the backend REST API with polling-based updates for new transactions and events.
+The frontend is a React application served via CloudFront CDN. It consumes the backend
+REST API with polling-based updates for new transactions and events.
 
 ```
 ┌────────┐     ┌──────────────────────────────────────────────────┐
@@ -66,18 +91,23 @@ The frontend is a React application served via CloudFront CDN. It consumes the b
 
 #### Home (`/`)
 
-Entry point and chain overview. Provides at-a-glance state of the Stellar network and quick access to exploration.
+Entry point and chain overview. Provides at-a-glance state of the Stellar network and
+quick access to exploration.
 
-- Global search bar — accepts transaction hashes, contract IDs, token codes, account IDs, ledger sequences
-- Latest transactions table — hash (truncated), source account, operation type, status badge, timestamp
+- Global search bar — accepts transaction hashes, contract IDs, token codes, account IDs,
+  ledger sequences
+- Latest transactions table — hash (truncated), source account, operation type, status
+  badge, timestamp
 - Latest ledgers table — sequence, closed_at, transaction count
-- Chain overview — current ledger sequence, transactions per second, total accounts, total contracts
+- Chain overview — current ledger sequence, transactions per second, total accounts,
+  total contracts
 
 #### Transactions (`/transactions`)
 
 Paginated, filterable table of all indexed transactions. Default sort: most recent first.
 
-- Transaction table — hash, ledger sequence, source account, operation type, status badge (success/failed), fee, timestamp
+- Transaction table — hash, ledger sequence, source account, operation type, status badge
+  (success/failed), fee, timestamp
 - Filters — source account, contract ID, operation type
 - Cursor-based pagination controls
 
@@ -85,15 +115,25 @@ Paginated, filterable table of all indexed transactions. Default sort: most rece
 
 Both modes display the same base transaction details:
 
-- Transaction hash (full, copyable), status badge (success/failed), ledger sequence (link), timestamp
+- Transaction hash (full, copyable), status badge (success/failed), ledger sequence
+  (link), timestamp
 - Fee charged (XLM + stroops), source account (link), memo (type + content)
 - Signatures — signer, weight, signature hex
 
 Two display modes toggle how **operations** are presented:
 
-- **Normal mode** — graph/tree representation of the transaction's operation flow. Visually shows the relationships between source account, operations, and affected accounts/contracts. Each node in the tree displays a human-readable summary (e.g. "Sent 1,250 USDC to GD2M…K8J1", "Swapped 100 USDC for 95.2 XLM on Soroswap"). Soroban invocations render as a nested call tree showing the contract-to-contract hierarchy. Designed for general users exploring transactions.
+- **Normal mode** — graph/tree representation of the transaction's operation flow.
+  Visually shows the relationships between source account, operations, and affected
+  accounts/contracts. Each node in the tree displays a human-readable summary (e.g.
+  "Sent 1,250 USDC to GD2M…K8J1", "Swapped 100 USDC for 95.2 XLM on Soroswap"). Soroban
+  invocations render as a nested call tree showing the contract-to-contract hierarchy.
+  Designed for general users exploring transactions.
 
-- **Advanced mode** — targeted at developers and experienced users. Shows per-operation raw parameters, full argument values, operation IDs, and return values. Includes events emitted (type, topics, raw data), diagnostic events, and collapsible raw XDR sections (`envelope_xdr`, `result_xdr`, `result_meta_xdr`). All values are shown in their original format without simplification.
+- **Advanced mode** — targeted at developers and experienced users. Shows per-operation
+  raw parameters, full argument values, operation IDs, and return values. Includes events
+  emitted (type, topics, raw data), diagnostic events, and collapsible raw XDR sections
+  (`envelope_xdr`, `result_xdr`, `result_meta_xdr`). All values are shown in their
+  original format without simplification.
 
 #### Ledgers (`/ledgers`)
 
@@ -112,7 +152,8 @@ Paginated table of all ledgers. Default sort: most recent first.
 
 List of all known tokens (classic Stellar assets and Soroban token contracts).
 
-- Token table — asset code, issuer / contract ID, type (classic / SAC / Soroban), total supply, holder count
+- Token table — asset code, issuer / contract ID, type (classic / SAC / Soroban), total
+  supply, holder count
 - Filters — type (classic, SAC, Soroban), asset code search
 - Cursor-based pagination controls
 
@@ -120,7 +161,8 @@ List of all known tokens (classic Stellar assets and Soroban token contracts).
 
 Single token detail view.
 
-- Token summary — asset code, issuer or contract ID (copyable), type badge, total supply, holder count, deployed at ledger (if Soroban)
+- Token summary — asset code, issuer or contract ID (copyable), type badge, total supply,
+  holder count, deployed at ledger (if Soroban)
 - Metadata — name, description, icon (if available), domain/home page
 - Latest transactions — paginated table of recent transactions involving this token
 
@@ -128,9 +170,12 @@ Single token detail view.
 
 Contract details and interface.
 
-- Contract summary — contract ID (full, copyable), deployer account (link), deployed at ledger (link), WASM hash, SAC badge if applicable
-- Contract interface — list of public functions with parameter names and types, allowing users to understand the contract's API without reading source code
-- Invocations tab — recent invocations table (function name, caller account, status, ledger, timestamp)
+- Contract summary — contract ID (full, copyable), deployer account (link), deployed at
+  ledger (link), WASM hash, SAC badge if applicable
+- Contract interface — list of public functions with parameter names and types, allowing
+  users to understand the contract's API without reading source code
+- Invocations tab — recent invocations table (function name, caller account, status,
+  ledger, timestamp)
 - Events tab — recent events table (event type, topics, data, ledger)
 - Stats — total invocations count, unique callers
 
@@ -138,7 +183,7 @@ Contract details and interface.
 
 List of NFTs on the Stellar network (Soroban-based NFT contracts).
 
-- NFT table — name/identifier, collection name, contract ID, owner, preview image (if available)
+- NFT table — name/identifier, collection name, contract ID, owner, preview image
 - Filters — collection, contract ID
 - Cursor-based pagination controls
 
@@ -146,7 +191,8 @@ List of NFTs on the Stellar network (Soroban-based NFT contracts).
 
 Single NFT overview.
 
-- NFT summary — name, identifier/token ID, collection name, contract ID (link), owner account (link)
+- NFT summary — name, identifier/token ID, collection name, contract ID (link), owner
+  account (link)
 - Media preview — image, video, or other media associated with the NFT
 - Metadata — full attribute list (traits, properties)
 - Transfer history — table of ownership changes
@@ -155,23 +201,27 @@ Single NFT overview.
 
 Paginated table of all liquidity pools.
 
-- Pool table — pool ID (truncated), asset pair (e.g. XLM/USDC), total shares, reserves per asset, fee percentage
+- Pool table — pool ID (truncated), asset pair (e.g. XLM/USDC), total shares, reserves
+  per asset, fee percentage
 - Filters — asset pair, minimum TVL
 - Cursor-based pagination controls
 
 #### Liquidity Pool (`/liquidity-pools/:id`)
 
-- Pool summary — pool ID (full, copyable), asset pair, fee percentage, total shares, reserves per asset
+- Pool summary — pool ID (full, copyable), asset pair, fee percentage, total shares,
+  reserves per asset
 - Charts — TVL over time, volume over time, fee revenue
 - Pool participants — table of liquidity providers and their share
 - Recent transactions — deposits, withdrawals, and trades involving this pool
 
 #### Search Results (`/search?q=`)
 
-Generic search across all entity types. For exact matches (transaction hash, contract ID, account ID), redirects directly to the detail page. Otherwise displays grouped results.
+Generic search across all entity types. For exact matches (transaction hash, contract ID,
+account ID), redirects directly to the detail page. Otherwise displays grouped results.
 
 - Search input — pre-filled with current query, allows refinement
-- Results grouped by type — transactions, contracts, tokens, accounts, NFTs, liquidity pools (with type headers and counts)
+- Results grouped by type — transactions, contracts, tokens, accounts, NFTs, liquidity
+  pools (with type headers and counts)
 - Each result row — identifier (linked), type badge, brief context
 - Empty state — "No results found" with suggestions
 
@@ -179,19 +229,24 @@ Generic search across all entity types. For exact matches (transaction hash, con
 
 Present across all pages:
 
-- **Header** — logo, global search bar (searches contracts, transactions, tokens, accounts, pools, NFTs), network indicator (mainnet/testnet)
-- **Navigation** — links to home, transactions, ledgers, tokens, contracts, NFTs, liquidity pools
-- **Linked identifiers** — all hashes, account IDs, contract IDs, token IDs, pool IDs, and ledger sequences are clickable links to their respective detail pages
+- **Header** — logo, global search bar, network indicator (mainnet/testnet)
+- **Navigation** — links to home, transactions, ledgers, tokens, contracts, NFTs,
+  liquidity pools
+- **Linked identifiers** — all hashes, account IDs, contract IDs, token IDs, pool IDs,
+  and ledger sequences are clickable links to their respective detail pages
 - **Copy buttons** — on all full-length identifiers
 - **Relative timestamps** — "2 min ago" with full timestamp on hover
 - **Polling indicator** — shows when data was last refreshed
 
 ### 1.5 Performance and Error Handling
 
-- **Pagination** — all list views use cursor-based pagination sourced from the backend API, which in turn maps to Horizon's cursor model
+- **Pagination** — all list views use cursor-based pagination backed by the block
+  explorer's own database
 - **Loading states** — skeleton loaders for all data-dependent sections; spinner for search
-- **Error states** — clear error messages for network failures, 404s (unknown hash/account), and rate limit responses; retry affordances where appropriate
-- **Caching** — the frontend relies on backend-level caching (CloudFront, API Gateway) rather than local state caching to ensure data freshness
+- **Error states** — clear error messages for network failures, 404s (unknown
+  hash/account), and rate limit responses; retry affordances where appropriate
+- **Caching** — the frontend relies on backend-level caching (CloudFront, API Gateway)
+  rather than local state caching to ensure data freshness
 
 ---
 
@@ -199,7 +254,9 @@ Present across all pages:
 
 ### 2.1 Architecture
 
-The backend is a NestJS application running on AWS Lambda behind API Gateway. It is a REST API. The backend does not perform chain indexing; it sources chain data from Stellar Horizon — either via Horizon's REST API or by querying Horizon's PostgreSQL database directly.
+The backend is a NestJS application running on AWS Lambda behind API Gateway. It is a
+REST API. The backend does not perform chain indexing; it reads from the block explorer's
+own PostgreSQL database, which is populated by the Galexie-based ingestion pipeline.
 
 ```
 ┌──────────┐    HTTPS    ┌─────────────┐              ┌──────────────────────┐
@@ -216,25 +273,30 @@ The backend is a NestJS application running on AWS Lambda behind API Gateway. It
                                                       │  └─ Search ──────────┤
                                                       └──────────┬───────────┘
                                                                  │
-                                            ┌────────────────────┴────────────────────┐
-                                            │                                         │
-                                            ▼                                         ▼
-                                ┌──────────────────────┐              ┌──────────────────────┐
-                                │  Horizon REST API    │              │  Horizon PostgreSQL  │
-                                │                      │              │  (direct queries)    │
-                                └──────────────────────┘              └──────────────────────┘
+                                                                 ▼
+                                                      ┌──────────────────────┐
+                                                      │  RDS PostgreSQL      │
+                                                      │  (block explorer DB) │
+                                                      └──────────────────────┘
 ```
 
 ### 2.2 API Responsibilities and Boundaries
 
-The backend serves as a **facade** over Horizon, adding:
+The backend serves data from the block explorer's own database, adding:
 
-- **Data normalization** — transforms Horizon's response structures into a consistent, frontend-friendly format (e.g. flattening nested fields, adding human-readable operation summaries, attaching event interpretations)
-- **Soroban enrichment** — decorates contract invocations with metadata, function names, and structured interpretations that Horizon does not natively provide
-- **Search** — unified search across transaction hashes, account IDs, contract IDs, and contract metadata using PostgreSQL full-text indexes
-- **XDR decoding** — parses `envelope_xdr`, `result_xdr`, and `result_meta_xdr` using `stellar-sdk` and returns structured operation and result data
+- **Data normalization** — transforms raw indexed records into a consistent,
+  frontend-friendly format (e.g. flattening nested fields, attaching human-readable
+  operation summaries and event interpretations)
+- **Soroban enrichment** — decorates contract invocations with metadata, function names,
+  and structured interpretations stored at ingestion time
+- **Search** — unified search across transaction hashes, account IDs, contract IDs, and
+  contract metadata using PostgreSQL full-text indexes
+- **Raw XDR on demand** — the `envelope_xdr` and `result_xdr` fields are stored verbatim
+  and returned for the advanced transaction view; the backend decodes them on request using
+  `@stellar/stellar-sdk` to serve the collapsible advanced sections
 
-The backend does **not** own or duplicate chain history. Horizon (via its REST API or PostgreSQL database) is the authoritative source for all chain data. The frontend never communicates with Horizon directly — all requests go through the NestJS API.
+The backend does **not** call Horizon or any external chain API. All chain data lives in
+the block explorer's RDS.
 
 ### 2.3 Endpoints
 
@@ -242,13 +304,16 @@ The backend does **not** own or duplicate chain history. Horizon (via its REST A
 
 #### Network
 
-**`GET /network/stats`** — Chain overview: current ledger sequence, TPS, total accounts, total contracts.
+**`GET /network/stats`** — Chain overview: current ledger sequence, TPS, total accounts,
+total contracts.
 
 #### Transactions
 
-**`GET /transactions`** — Paginated list. Query params: `limit`, `cursor`, `filter[source_account]`, `filter[contract_id]`, `filter[operation_type]`.
+**`GET /transactions`** — Paginated list. Query params: `limit`, `cursor`,
+`filter[source_account]`, `filter[contract_id]`, `filter[operation_type]`.
 
-**`GET /transactions/:hash`** — Full detail for a single transaction (supports both normal and advanced representations):
+**`GET /transactions/:hash`** — Full detail for a single transaction (supports both normal
+and advanced representations):
 
 ```json
 {
@@ -276,13 +341,16 @@ The backend does **not** own or duplicate chain history. Horizon (via its REST A
 
 **`GET /ledgers`** — Paginated list of ledgers.
 
-**`GET /ledgers/:sequence`** — Ledger detail including transaction count and linked transactions.
+**`GET /ledgers/:sequence`** — Ledger detail including transaction count and linked
+transactions.
 
 #### Tokens
 
-**`GET /tokens`** — Paginated list of tokens (classic assets + Soroban token contracts). Query params: `limit`, `cursor`, `filter[type]` (classic/sac/soroban), `filter[code]`.
+**`GET /tokens`** — Paginated list of tokens (classic assets + Soroban token contracts).
+Query params: `limit`, `cursor`, `filter[type]` (classic/sac/soroban), `filter[code]`.
 
-**`GET /tokens/:id`** — Token detail: asset code, issuer/contract, type, supply, holder count, metadata.
+**`GET /tokens/:id`** — Token detail: asset code, issuer/contract, type, supply, holder
+count, metadata.
 
 **`GET /tokens/:id/transactions`** — Paginated transactions involving this token.
 
@@ -290,7 +358,8 @@ The backend does **not** own or duplicate chain history. Horizon (via its REST A
 
 **`GET /contracts/:contract_id`** — Contract metadata, deployer, WASM hash, stats.
 
-**`GET /contracts/:contract_id/interface`** — Public function signatures (names, parameter types, return types).
+**`GET /contracts/:contract_id/interface`** — Public function signatures (names, parameter
+types, return types).
 
 **`GET /contracts/:contract_id/invocations`** — Paginated list of contract invocations.
 
@@ -298,38 +367,53 @@ The backend does **not** own or duplicate chain history. Horizon (via its REST A
 
 #### NFTs
 
-**`GET /nfts`** — Paginated list of NFTs. Query params: `limit`, `cursor`, `filter[collection]`, `filter[contract_id]`.
+**`GET /nfts`** — Paginated list of NFTs. Query params: `limit`, `cursor`,
+`filter[collection]`, `filter[contract_id]`.
 
-**`GET /nfts/:id`** — NFT detail: name, token ID, collection, contract, owner, metadata, media URL.
+**`GET /nfts/:id`** — NFT detail: name, token ID, collection, contract, owner, metadata,
+media URL.
 
 **`GET /nfts/:id/transfers`** — Transfer history for a single NFT.
 
 #### Liquidity Pools
 
-**`GET /liquidity-pools`** — Paginated list of pools. Query params: `limit`, `cursor`, `filter[assets]`, `filter[min_tvl]`.
+**`GET /liquidity-pools`** — Paginated list of pools. Query params: `limit`, `cursor`,
+`filter[assets]`, `filter[min_tvl]`.
 
 **`GET /liquidity-pools/:id`** — Pool detail: asset pair, fee, reserves, total shares, TVL.
 
-**`GET /liquidity-pools/:id/transactions`** — Deposits, withdrawals, and trades for this pool.
+**`GET /liquidity-pools/:id/transactions`** — Deposits, withdrawals, and trades for this
+pool.
 
-**`GET /liquidity-pools/:id/chart`** — Time-series data for TVL, volume, and fee revenue. Query params: `interval` (1h/1d/1w), `from`, `to`.
+**`GET /liquidity-pools/:id/chart`** — Time-series data for TVL, volume, and fee revenue.
+Query params: `interval` (1h/1d/1w), `from`, `to`.
 
 #### Search
 
-**`GET /search?q=&type=transaction,contract,token,account,nft,pool`** — Generic search across all entity types. Uses prefix/exact matching on hashes, account IDs, contract IDs, and asset codes. Full-text search on metadata via `tsvector`/`tsquery` and GIN indexes.
+**`GET /search?q=&type=transaction,contract,token,account,nft,pool`** — Generic search
+across all entity types. Uses prefix/exact matching on hashes, account IDs, contract IDs,
+and asset codes. Full-text search on metadata via `tsvector`/`tsquery` and GIN indexes.
 
 ### 2.4 Caching Strategy
 
 Caching operates at two levels:
 
-- **CloudFront / API Gateway caching** — responses for immutable data (historical transactions, closed ledgers) are cached with long TTLs at the CDN edge. Mutable data (account balances, recent transactions) uses short TTLs (5–15 seconds) aligned with Stellar's ledger close interval.
-- **Backend in-memory caching** — frequently accessed reference data (contract metadata, network stats) is cached in the Lambda execution environment with TTLs of 30–60 seconds to reduce Horizon API calls.
+- **CloudFront / API Gateway caching** — responses for immutable data (historical
+  transactions, closed ledgers) are cached with long TTLs at the CDN edge. Mutable data
+  (recent transactions, network stats) uses short TTLs (5–15 seconds).
+- **Backend in-memory caching** — frequently accessed reference data (contract metadata,
+  network stats) is cached in the Lambda execution environment with TTLs of 30–60 seconds
+  to reduce database round-trips.
 
 ### 2.5 Fault Tolerance
 
-- **Horizon unavailability** — the backend returns cached data where available and degrades gracefully (e.g. serving stale ledger data with a freshness indicator) when Horizon is unreachable. Health check endpoints report Horizon connectivity status.
-- **Lambda cold starts** — mitigated via ARM/Graviton2 runtime and provisioned concurrency at higher traffic tiers.
-- **Database connection pooling** — RDS Proxy manages connection pools to prevent exhaustion under burst traffic.
+- **Ingestion lag** — if the Galexie pipeline falls behind, the API continues serving
+  data from the database with a freshness indicator showing the highest indexed ledger
+  sequence. A CloudWatch alarm fires at >60 s lag.
+- **Lambda cold starts** — mitigated via ARM/Graviton2 runtime and provisioned concurrency
+  at higher traffic tiers.
+- **Database connection pooling** — RDS Proxy manages connection pools to prevent
+  exhaustion under burst traffic.
 
 ---
 
@@ -338,37 +422,51 @@ Caching operates at two levels:
 ### 3.1 System Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                           SYSTEM ARCHITECTURE                             │
-├───────────────────────────────────────────────────────────────────────────┤
-│                                                                           │
-│  STELLAR NETWORK         INDEXING (HORIZON)           DATA STORAGE        │
-│  ┌────────────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
-│  │ Stellar Core       │  │ Stellar Horizon      │  │ Horizon PostgreSQL │ │
-│  │ (Captive Core +    │─>│ (ingestion + API)    │─>│ (ledgers, tx, ops, │ │
-│  │  history archives) │  │                      │  │  accounts, state)  │ │
-│  └────────────────────┘  └────────────┬─────────┘  └──────────┬─────────┘ │
-│                                       │                       │ read-only │
-│  BACKEND                              │                       │           │
-│  ┌──────────────────────┐             │                       │           │
-│  │ API Gateway          │<─── React   │                       │           │
-│  │   │                  │             │                       │           │
-│  │   └─> NestJS REST API│<────────────┴───────────────────────┘           │
-│  │                      │   (Horizon REST API + Horizon PostgreSQL)       │
-│  └──────────────────────┘                                                 │
-└───────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────────┐
+│                             SYSTEM ARCHITECTURE                               │
+├───────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  STELLAR NETWORK          INGESTION (GALEXIE)           STORAGE               │
+│  ┌──────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐  │
+│  │ Stellar Network  │    │ Galexie (ECS Fargate) │    │ S3                  │  │
+│  │ Peers (Captive   │───>│ Continuously running  │───>│ LedgerCloseMeta XDR │  │
+│  │ Core)            │    │ ~1 file per ledger    │    │ (transient)         │  │
+│  └──────────────────┘    └──────────────────────┘    └──────────┬──────────┘  │
+│                                                                 │             │
+│  PROCESSING                                                     │ S3 PutObject│
+│  ┌──────────────────────────────────────────────────────┐       │             │
+│  │ Lambda — Ledger Processor (event-driven, per file)   │<──────┘             │
+│  │ Parses XDR → ledgers, txs, ops, events, contracts    │                     │
+│  └──────────────────────────┬───────────────────────────┘                     │
+│                             │                                                 │
+│  ┌──────────────────────────▼───────────────────────────┐                     │
+│  │ RDS PostgreSQL (block explorer's own schema)         │                     │
+│  │ ledgers · transactions · operations · contracts      │                     │
+│  │ soroban_invocations · soroban_events · tokens · nfts │                     │
+│  └──────────────────────────┬───────────────────────────┘                     │
+│                             │                                                 │
+│  API LAYER                  │                                                 │
+│  ┌──────────────────────────▼──────────┐  ┌────────────────────────────────┐  │
+│  │ API Gateway → Lambda (NestJS)       │  │ CloudFront CDN                 │  │
+│  │ REST, rate limiting, API keys       │  │ React SPA + static assets      │  │
+│  └─────────────────────────────────────┘  └────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────────┘
 
 Connections:
-  Stellar Core + history archives --> Horizon (ingestion)
-  Horizon --> Horizon PostgreSQL (write)
-  NestJS --> Horizon REST API (standard queries)
-  NestJS --> Horizon PostgreSQL read-only (direct queries)
-  React --> API Gateway --> NestJS REST API
+  Stellar network peers → Galexie (Captive Core, live ledger stream)
+  Stellar history archives → Galexie backfill task (one-time, batch)
+  Galexie → S3 (LedgerCloseMeta XDR files)
+  S3 PutObject event → Lambda Ledger Processor
+  Lambda Ledger Processor → RDS (write)
+  Lambda NestJS API → RDS (read)
+  React SPA → API Gateway → Lambda NestJS API
 ```
 
 ### 3.2 Deployment Model
 
-All infrastructure runs on AWS. At launch the system is deployed in a **single Availability Zone** (`us-east-1a`) within a VPC, expanding to multi-AZ when SLA requirements demand it.
+All infrastructure runs on AWS, deployed to a **dedicated AWS sub-account owned by Rumble
+Fish**. At launch the system is deployed in a single Availability Zone (`us-east-1a`),
+expanding to multi-AZ when SLA requirements demand it.
 
 ```
 ┌─ VPC — us-east-1a ──────────────────────────────────────────────────────────┐
@@ -380,457 +478,655 @@ All infrastructure runs on AWS. At launch the system is deployed in a **single A
 │  ┌─ Private Subnet ──────────────────────────────────────────────────────┐  │
 │  │        │                           ▼                                  │  │
 │  │        │                  Lambda (NestJS API)                         │  │
+│  │        │                  Lambda (Ledger Processor)                   │  │
+│  │        │                  Lambda (Event Interpreter)                  │  │
 │  │        │                           │                                  │  │
 │  │        │              ┌────────────┴────────────┐                     │  │
-│  │        │              │ Horizon API              │                    │  │
-│  │        │              │ Horizon PostgreSQL (RO)  │                    │  │
+│  │        │              │ RDS PostgreSQL           │                     │  │
+│  │        │              │ (block explorer schema)  │                     │  │
 │  │        │              └─────────────────────────┘                     │  │
 │  └────────┼──────────────────────────────────────────────────────────────┘  │
 └───────────┼─────────────────────────────────────────────────────────────────┘
             │
+  ECS Fargate (Galexie) runs in the same VPC, writing to S3 via VPC endpoint
   Route 53 ──> CloudFront CDN
   Lambda ····> Secrets Manager (credentials)
   Lambda ····> CloudWatch / X-Ray (monitoring)
 ```
 
-### 3.3 Environments
+### 3.3 Component Ownership
 
-| Environment     | Purpose                   | Horizon Target                             | Database                       |
-| --------------- | ------------------------- | ------------------------------------------ | ------------------------------ |
-| **Development** | Local and CI development  | Stellar testnet (public Horizon or local)  | Local PostgreSQL or none       |
-| **Staging**     | Pre-production validation | Self-hosted Horizon on testnet             | Horizon PostgreSQL (read-only) |
-| **Production**  | Live service              | Self-hosted Horizon on mainnet (or hosted) | Horizon PostgreSQL (read-only) |
+**Hosted by Rumble Fish (AWS sub-account):**
 
-Infrastructure is provisioned via IaC (Terraform or CDK) with environment-specific parameter overrides.
+| Component | Service | Role |
+|-----------|---------|------|
+| Galexie process | ECS Fargate (1 task, continuous) | Streams live ledger data from Stellar network to S3 |
+| Historical backfill task | ECS Fargate (batch, one-time) | Processes history archives to backfill from Soroban mainnet activation |
+| S3 bucket `stellar-ledger-data` | AWS S3 | Receives `LedgerCloseMeta` XDR files; triggers Ledger Processor |
+| Lambda — Ledger Processor | AWS Lambda (S3 event-driven) | Parses XDR; writes ledgers, txs, ops, events, contracts to RDS |
+| Lambda — Event Interpreter | AWS Lambda (EventBridge, 5 min) | Post-processes recent events to generate human-readable summaries |
+| Lambda — NestJS API handlers | AWS Lambda (per API Gateway route) | Serves all public API requests |
+| RDS PostgreSQL | AWS RDS (db.r6g.large, Single-AZ) | Block explorer database |
+| API Gateway | AWS API Gateway | REST API, rate limiting, API keys, response caching |
+| CloudFront CDN | AWS CloudFront | Serves React frontend |
+| S3 bucket `api-docs` | AWS S3 + CloudFront | OpenAPI spec + documentation portal |
+| EventBridge Scheduler | AWS EventBridge | Cron triggers for background workers |
+| Secrets Manager | AWS Secrets Manager | DB credentials |
+| CloudWatch + X-Ray | AWS CloudWatch | Logs, metrics, alarms, distributed tracing |
+| CI/CD pipeline | GitHub Actions → AWS CDK | Infrastructure-as-code deploy |
+
+**External services consumed (read-only):**
+
+| External service | Purpose | Failure impact |
+|-----------------|---------|----------------|
+| Stellar network peers (Galexie Captive Core) | Live ledger data source | Critical — mitigated by connecting to multiple peers |
+| Stellar public history archives | Historical backfill (one-time) | Non-critical after backfill completes |
+
+No external APIs (Horizon, Soroswap, Aquarius, Soroban RPC) are required for core
+functionality. All data flows from the canonical ledger.
 
 ### 3.4 Tech Stack
 
-**Data Layer**
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| Ingestion | Galexie (ECS Fargate) | Streams `LedgerCloseMeta` XDR from Stellar network to S3 |
+| XDR parsing | `@stellar/stellar-sdk` (Node.js) | Deserializes all XDR types in Ledger Processor Lambda |
+| API Framework | NestJS / TypeScript | Modular REST API |
+| Compute | AWS Lambda (ARM/Graviton2) | Serverless; auto-scaling |
+| Gateway | AWS API Gateway | Rate limiting, API keys, request routing, response caching |
+| Database | RDS PostgreSQL 16 | Block explorer schema with native range partitioning |
+| CDN | CloudFront | Static asset delivery, response caching |
+| DNS | Route 53 | Domain management |
+| Monitoring | CloudWatch + X-Ray | Logging, distributed tracing, alarms |
+| Secrets | Secrets Manager | Database credentials, API keys |
+| IaC | AWS CDK (TypeScript) | All infrastructure defined as code |
+| CI/CD | GitHub Actions → `cdk deploy` | Automated deployment on merge to main |
 
-All chain data originates from **Stellar Horizon**, which ingests from Stellar Core (via Captive Core) and history archives, then stores structured records in its own PostgreSQL database. The NestJS backend accesses this data through two paths:
+### 3.5 Environments
 
-- **Horizon REST API** — used for standard entity queries (ledgers, transactions, operations, accounts). Provides cursor-based pagination, SSE streaming, and well-structured JSON responses.
-- **Horizon PostgreSQL (read-only)** — used for custom queries the REST API does not expose efficiently: full-text search, aggregations, Soroban-specific joins, and batch lookups. The backend never writes to this database.
+| Environment | Purpose | Database |
+|-------------|---------|----------|
+| **Development** | Local and CI development | Local PostgreSQL |
+| **Staging** | Pre-production validation | Separate RDS (testnet data) |
+| **Production** | Live service | Mainnet RDS |
 
-**Application Layer**
+### 3.6 Scalability
 
-| Component | Technology          | Purpose                                           |
-| --------- | ------------------- | ------------------------------------------------- |
-| Framework | NestJS / TypeScript | Modular REST API with excellent AWS integration   |
-| Compute   | AWS Lambda          | Serverless; auto-scaling; Horizon runs separately |
-| Gateway   | AWS API Gateway     | Rate limiting, API keys, request routing          |
+| Component | Mechanism | Trigger |
+|-----------|-----------|---------|
+| **API** | Lambda auto-scale (up to 50 concurrent) | On-demand |
+| **Ledger Processor** | Lambda auto-scale (S3 event-driven) | Per ledger file |
+| **PostgreSQL** | RDS Proxy for connection pooling | Default |
+| | Materialized views for aggregated statistics | Default |
+| | Add read replica | Primary CPU > 60% |
+| **CDN** | CloudFront scales automatically | N/A |
+| **Multi-AZ** | Expand VPC + enable RDS Multi-AZ | SLA > 99.9% required |
 
-**Infrastructure Layer**
+### 3.7 Monitoring and Alerting
 
-| Component  | Technology        | Purpose                                 |
-| ---------- | ----------------- | --------------------------------------- |
-| CDN        | CloudFront        | Static asset delivery, response caching |
-| DNS        | Route 53          | Domain management, health checks        |
-| Monitoring | CloudWatch, X-Ray | Logging, distributed tracing, alarms    |
-| Secrets    | Secrets Manager   | Database credentials, API keys          |
+| Alarm | Threshold | Action |
+|-------|-----------|--------|
+| Galexie ingestion lag | S3 file timestamp >60 s behind ledger close time | SNS → Slack/email |
+| Ledger Processor error rate | >1% of Lambda invocations in error | SNS → Slack/email |
+| RDS CPU | >70% sustained for 5 min | SNS → on-call |
+| RDS free storage | <20% remaining | SNS → expand storage |
+| API Gateway 5xx rate | >0.5% of requests | SNS → Slack/email |
 
-### 3.5 Scalability
-
-| Component      | Mechanism                                    | Trigger              |
-| -------------- | -------------------------------------------- | -------------------- |
-| **API**        | Lambda auto-scale (up to 50 concurrent)      | On-demand            |
-| **PostgreSQL** | RDS Proxy for connection pooling             | Default              |
-|                | Materialized views for aggregated statistics | Default              |
-| **CDN**        | CloudFront scales automatically              | N/A                  |
-| **Multi-AZ**   | Expand VPC + enable RDS Multi-AZ             | SLA > 99.9% required |
-
-### 3.6 Storage
-
-- **Horizon PostgreSQL** — all chain data (ledgers, transactions, operations, accounts, effects). Owned and managed by Horizon; the NestJS API reads this database directly (read-only) for custom queries alongside using Horizon's REST API.
-- **S3** — static frontend assets served via CloudFront.
-
-### 3.7 Monitoring and Observability
-
-- **CloudWatch Logs** — structured JSON logging from Lambda and API Gateway
-- **X-Ray** — distributed tracing across API Gateway → Lambda → Horizon API calls, with correlation IDs propagated to error responses
-- **CloudWatch Alarms** — Lambda error rate, API Gateway 5xx rate, Horizon ingestion lag (if self-hosted), RDS CPU/connection utilization
+CloudWatch dashboards expose: Galexie S3 file freshness, Ledger Processor duration and
+error rate, API latency (p50/p95/p99), RDS CPU/connections, and highest indexed ledger
+sequence vs. network tip.
 
 ---
 
-## 4. Indexing
+## 4. Indexing Pipeline (Galexie)
 
-### 4.1 How Stellar Horizon Works
+### 4.1 Overview
 
-Stellar Horizon is the canonical API server for the Stellar network. It connects to the Stellar network via **Captive Core** (an embedded instance of Stellar Core) and reads from **history archives** — append-only ledger snapshots published by network validators. Horizon ingests this raw network data, processes it, and stores structured records (ledgers, transactions, operations, effects, accounts, offers, trust lines) in its own PostgreSQL database. It then exposes this data through a REST API and Server-Sent Events (SSE) for streaming.
-
-Horizon is both the **indexer** and the **API server**. The block explorer does not run a separate indexing pipeline.
-
-### 4.2 Indexing Flow
+Indexing uses **self-hosted Galexie** running on ECS Fargate. Galexie connects to Stellar
+network peers via Captive Core, exports one `LedgerCloseMeta` XDR file per ledger close
+to S3, and a Lambda function processes each file as it arrives.
 
 ```
-  Stellar network (Core + history archives)
-                    │
-                    ▼
-            ┌───────────────┐
-            │   Horizon     │  ingestion (Captive Core + archives)
-            │   ingestion   │  → build state from checkpoint
-            │               │  → resume to tip, then live
-            └───────┬───────┘
-                    │
-                    ▼
-            ┌───────────────┐
-            │   Horizon     │  REST API + PostgreSQL
-            │   PostgreSQL  │  (history_ledgers, history_transactions,
-            └───────┬───────┘   history_operations, accounts, …)
-                    │
-                    ▼
-            NestJS backend  →  Horizon API (primary)
-                            →  Horizon PostgreSQL read-only (direct)
+Stellar Network (mainnet peers)
+        │
+        ▼ (Captive Core / ledger stream)
+┌──────────────────────────────────┐
+│  Galexie — ECS Fargate (1 task)  │
+│  Continuously running            │
+│  Exports one file per ledger     │
+│  (~1 file every 5–6 seconds)     │
+└──────────────┬───────────────────┘
+               │ LedgerCloseMeta XDR (zstd-compressed)
+               ▼
+┌──────────────────────────────────┐
+│  S3: stellar-ledger-data/        │
+│  ledgers/{seq_start}-{seq_end}   │
+│                    .xdr.zstd     │
+└──────────────┬───────────────────┘
+               │ S3 PutObject event notification
+               ▼
+┌─────────────────────────────────────────────────────────┐
+│  Lambda "Ledger Processor"  (event-driven, per file)    │
+│  1. Download + decompress XDR                           │
+│  2. Parse LedgerCloseMeta via @stellar/stellar-sdk      │
+│  3. Extract ledger header (sequence, close_at, proto)   │
+│  4. Extract all transactions: hash, source, fee,        │
+│     success/failure, envelope XDR, result XDR           │
+│  5. Extract operations: type, details per operation     │
+│  6. Extract Soroban invocations (INVOKE_HOST_FUNCTION): │
+│     contract ID, function name, args, return value      │
+│  7. Extract CAP-67 events (SorobanTransactionMeta       │
+│     .events): all contract events in one stream         │
+│  8. Extract contract deployments (new C-addresses,      │
+│     WASM hashes) from LedgerEntryChanges                │
+│  9. Detect token contracts (SEP-41), NFT contracts,     │
+│     liquidity pools from deployment events              │
+│ 10. Write all above to RDS PostgreSQL                   │
+└─────────────────────────────────────────────────────────┘
+               │
+               ▼
+       RDS PostgreSQL (block explorer schema — Section 6)
 ```
 
-**Step-by-step process:**
+### 4.2 What `LedgerCloseMeta` Contains
 
-1. **Start Horizon with ingestion enabled** (testnet or mainnet). Configure `HISTORY_ARCHIVE_URLS` and Captive Core for the target network. Apply database migrations, then start the Horizon process.
-2. **Build state** — Horizon builds cumulative account state from the **latest checkpoint** available in the history archives.
-3. **Catch up** — from that checkpoint + 1, Horizon ingests ledger by ledger up to the **network tip** via Captive Core. Initial catch-up can take hours depending on how far behind the archives are.
-4. **Live ingestion** — new ledgers are ingested as they close (~every 5 seconds). After catch-up, the block explorer sees near-real-time data with only a few seconds of delay.
+The `LedgerCloseMeta` XDR produced by Galexie contains the complete ledger close.
+Everything a block explorer needs is present; no external API is required.
 
-### 4.3 Data Indexed by Horizon
+| Data needed | Where it lives in LedgerCloseMeta |
+|-------------|-----------------------------------|
+| Ledger sequence, close time, protocol version | `LedgerHeader` |
+| Transaction hash, source account, fee, success | `TransactionEnvelope` + `TransactionResult` |
+| Operation type and details | `OperationMeta` per transaction |
+| Soroban invocation (function, args, return value) | `InvokeHostFunctionOp` in envelope + `SorobanTransactionMeta.returnValue` |
+| CAP-67 contract events (type, topics, data) | `SorobanTransactionMeta.events` |
+| Contract deployment (C-address, WASM hash) | `LedgerEntryChanges` (CONTRACT type) |
+| Account balance changes | `LedgerEntryChanges` (ACCOUNT type) |
+| Liquidity pool state | `LedgerEntryChanges` (LIQUIDITY_POOL type) |
 
-**Core chain data**
+### 4.3 Historical Backfill
 
-- **Ledgers** — `GET /ledgers`, `GET /ledgers/:sequence`
-  - sequence, hash, closed_at, protocol_version, transaction_count
-- **Transactions** — `GET /transactions`, `GET /transactions/:hash`
-  - hash, source_account, fee_charged, successful, envelope_xdr, result_xdr
-- **Operations** — `GET /operations`, `GET /transactions/:hash/operations`
-  - type, details (JSONB), transaction reference
-- **Effects** — `GET /effects`, `GET /operations/:id/effects`
-  - type, account, details
+For historical data, a separate ECS Fargate task reads from Stellar's **public history
+archives** (the same archives that Horizon used for `db reingest`). It writes
+`LedgerCloseMeta` files in the same format to the same S3 bucket, triggering the same
+Ledger Processor Lambda. No separate code path is required.
 
-**Account and asset state**
+- **Scope:** from Soroban mainnet activation ledger (late 2023) to the present
+- **Parallelism:** backfill runs in configurable ledger-range batches, fully parallelisable
+- **Timing:** runs as a one-time batch during Phase 1 (Deliverable 1); live ingestion
+  continues in parallel
 
-- **Accounts** — `GET /accounts/:id`
-  - account_id, sequence, balances, signers, thresholds
-- **Trust lines** — embedded in `GET /accounts/:id`
-  - asset_type, asset_code, asset_issuer, balance, limit
-- **Offers** — `GET /offers`, `GET /accounts/:id/offers`
-  - offer_id, seller, selling, buying, amount, price
-- **Liquidity pools** — `GET /liquidity_pools`, `GET /liquidity_pools/:id`
-  - pool_id, fee, reserves, total_shares, total_trustlines
+### 4.4 Background Workers
 
-**Market data**
+| Worker | Trigger | Role |
+|--------|---------|------|
+| **Ledger Processor** | S3 PutObject (~every 5–6 s) | Primary ingestion — parses XDR, writes all chain data to RDS |
+| **Event Interpreter** | EventBridge rate(5 min) | Post-processes new events to generate human-readable summaries (swap, transfer, mint, burn patterns) |
 
-- **Trades** — `GET /trades`
-  - base_asset, counter_asset, price, base_amount, time
-- **Trade aggregations** — `GET /trade_aggregations`
-  - base_asset, counter_asset, open, high, low, close
-- **Order book** — `GET /order_book`
-  - bids, asks per asset pair
+### 4.5 Operational Characteristics
 
-### 4.4 Pagination and Cursors
+**Normal operation (live):**
+```
+Galexie (ECS Fargate) → S3 (~5-6 s per ledger)
+                      → Lambda Ledger Processor (~<10 s from ledger close to DB write)
+```
 
-Horizon uses **cursor-based pagination** with opaque paging tokens. The block explorer backend maps these directly:
+**Recovery from Galexie restart:** Galexie is checkpoint-aware. On restart it reads the
+last exported ledger sequence and resumes from there. No manual intervention required.
 
-- Each Horizon list response includes `_links.next` and `_links.prev` with cursor parameters
-- The block explorer API exposes `cursor` and `limit` query parameters that are passed through to Horizon
-- When querying Horizon's PostgreSQL directly, cursors are implemented using sequential IDs or timestamps to maintain a consistent pagination model
+**Recovery from Ledger Processor failure:** S3 PutObject event notifications are retried
+by Lambda automatically. For permanent failures, the file remains in S3 and can be
+replayed by re-triggering the Lambda with the S3 key.
 
-### 4.5 Historical Backfill
+**Schema migrations:** versioned, managed via AWS CDK and run as part of the CI/CD
+pipeline before deploying new Lambda code.
 
-By default, Horizon starts from the latest checkpoint in the archives, meaning early ledger history is not available. If the block explorer must show **full history from ledger 1**:
+**Protocol upgrades:** when Stellar introduces a new CAP that changes `LedgerCloseMeta`
+structure, we update `@stellar/stellar-sdk` XDR types. Protocol upgrades are infrequent
+and well-announced in advance.
 
-1. **Backfill in chunks** — run `horizon db reingest range <from> <to>` repeatedly (e.g. `1 64000`, `64001 128000`, … up to the max available in the archives). The `to` sequence must not exceed the latest checkpoint published in the history archives.
-2. **Isolate backfill** — run these commands without Horizon's normal ingestion process writing to the same database (stop Horizon or use a dedicated job).
-3. **Resume live** — when backfill is complete up to the latest archive checkpoint, start Horizon with ingestion enabled so it resumes from that point to the tip and then stays live.
-
-### 4.6 Near-Real-Time vs Historical Indexing
-
-| Mode         | Mechanism                                      | Latency          | Use Case                   |
-| ------------ | ---------------------------------------------- | ---------------- | -------------------------- |
-| **Live**     | Captive Core streams new ledgers as they close | ~5 seconds       | Current network activity   |
-| **Catch-up** | Horizon ingests from last checkpoint to tip    | Minutes to hours | Initial deployment         |
-| **Backfill** | `db reingest range` from history archives      | Hours to days    | Full history from ledger 1 |
-
-History archives can only be ingested up to their **latest published checkpoint**. Live data comes directly from Captive Core, so "latest blocks" are available with minimal delay once Horizon is caught up.
-
-### 4.7 Idempotency and Re-sync
-
-Horizon's ingestion is **idempotent** — re-ingesting a ledger range that was already processed produces the same result. This means:
-
-- Failed or interrupted backfill runs can be safely retried
-- If Horizon loses its database, it can be rebuilt from the archives and Captive Core
-- The block explorer does not need to implement its own reorg safety or rollback logic; Stellar's consensus model (SCP) does not produce chain reorganizations in the way proof-of-work chains do. Once a ledger closes, it is final.
-
-### 4.8 Block Explorer Consumption
-
-- **Horizon REST API:** NestJS calls Horizon's REST API for standard queries (ledgers, transactions, operations, accounts).
-- **Horizon PostgreSQL (direct):** For custom analytics, Soroban-specific views, or queries that the Horizon API does not expose well, NestJS queries Horizon's PostgreSQL directly (`history_ledgers`, `history_transactions`, etc.). Access is read-only — the block explorer never writes to Horizon's database.
-- **XDR decoding:** XDR fields returned by either path are decoded in the backend using `stellar-sdk`.
-
-The NestJS API chooses the appropriate data source per endpoint. Chain data remains in Horizon as the single source of truth.
+**Open-source re-deployability:** the full CDK stack is public; Stellar or any third party
+can fork the repository and deploy the entire system in a fresh AWS account.
 
 ---
 
 ## 5. XDR Parsing
 
-### 5.1 What is Stellar XDR
+### 5.1 Parsing Strategy
 
-**XDR (External Data Representation)** is the binary serialization format used across the Stellar network. All on-chain data — transaction envelopes, operation results, ledger metadata, account state — is encoded in XDR before being written to the ledger. Horizon stores several XDR fields alongside decoded data:
+XDR parsing happens in two places:
 
-- **`envelope_xdr`** — the full signed transaction envelope
-  - Source account, sequence number, operations, memo, time bounds, signatures
-- **`result_xdr`** — the outcome of the transaction
-  - Success/failure status, per-operation result codes and details
-- **`result_meta_xdr`** — ledger state changes caused by the transaction
-  - Balance deltas, trust line changes, contract state mutations, Soroban events
-- **`fee_meta_xdr`** — fee-related ledger changes
-  - Fee charging state deltas applied before transaction execution
+- **Ledger Processor Lambda (at ingestion time):** the primary parsing path. Every ledger's
+  `LedgerCloseMeta` is fully deserialized using `@stellar/stellar-sdk` XDR types.
+  Structured results are written to RDS. The frontend receives pre-decoded data for all
+  normal operations.
 
-### 5.2 Parsing Strategy
+- **NestJS API (on request):** the raw `envelope_xdr` and `result_xdr` strings are stored
+  verbatim in RDS and returned to the frontend for the advanced view. The API can also
+  decode them on request using `@stellar/stellar-sdk` to serve additional structured fields
+  not stored at ingestion time.
 
-XDR parsing is performed in the **backend** (NestJS) using `stellar-sdk`, which provides full XDR codec support for all Stellar types. The frontend receives pre-decoded structured data and does not need to parse XDR directly (though raw XDR is available in collapsible sections for advanced users).
+### 5.2 Data Extracted at Ingestion (Ledger Processor)
 
-**Transaction result XDR parsing:**
+**From `LedgerHeader`:**
+- `sequence`, `closeTime`, `protocolVersion`, `baseFee`, `txSetResultHash`
 
-1. Decode `result_xdr` using `xdr.TransactionResult.fromXDR(base64String, 'base64')`
-2. Extract the top-level result code (`txSuccess`, `txFailed`, `txBadSeq`, etc.)
-3. For each operation in the result, extract the operation-specific result (e.g. `PaymentResult`, `ManageSellOfferResult`, `InvokeHostFunctionResult`)
-4. Map result codes to human-readable status messages
+**From `TransactionEnvelope` + `TransactionResult`:**
+- `hash` (computed by hashing the envelope XDR), `sourceAccount`, `feeCharged`,
+  `successful`, `resultCode`
+- Raw `envelopeXdr` and `resultXdr` stored verbatim for advanced view
 
-**Operation result XDR parsing:**
+**From `OperationMeta` per transaction:**
+- Operation `type`, structured `details` JSONB (type-specific fields)
+- For `INVOKE_HOST_FUNCTION`: `contractId`, `functionName`, `functionArgs` (decoded
+  `ScVal`), `returnValue` (decoded `ScVal`)
 
-1. Each operation result contains a discriminated union based on operation type
-2. For classic operations (payment, offer, path payment), extract structured fields (amount, asset, destination, offer ID, etc.)
-3. For Soroban operations (`InvokeHostFunctionResult`), extract the return value, contract events, and diagnostic events from `result_meta_xdr`
-4. Soroban events (CAP-67) are decoded from the meta XDR to extract event type, topics, and data — these are the basis for human-readable interpretations (e.g. identifying token transfers, swaps, and state changes)
+**From `SorobanTransactionMeta.events`:**
+- `eventType` (contract/system/diagnostic), `contractId`, `topics` (decoded `ScVal[]`),
+  `data` (decoded `ScVal`)
 
-### 5.3 Data Extracted and Stored
+**From `LedgerEntryChanges`:**
+- Contract deployments: `contractId`, `wasmHash`, `deployerAccount`
+- Account changes (used for token holder counts)
+- Liquidity pool state changes
 
-- **`envelope_xdr`** — operation types, parameters, memo, signatures
-  - Decoded and served via API; raw XDR preserved for advanced view
-- **`result_xdr`** — per-operation success/failure, result details
-  - Mapped to human-readable status; included in transaction response
-- **`result_meta_xdr`** — Soroban events, state changes, return values
-  - Decoded and served via API; event data queryable from Horizon PostgreSQL
-- **`fee_meta_xdr`** — fee-related state changes
-  - Decoded on demand; not persisted separately
+### 5.3 Soroban-Specific Handling
 
-### 5.4 Soroban-Specific XDR Handling
+- **CAP-67 events** are decoded from `SorobanTransactionMeta.events` at ingestion time
+  and stored in the `soroban_events` table as structured JSONB. The API serves them
+  decoded — the frontend does not need to handle raw XDR for events.
+- **Return values** — the return value of `invokeHostFunction` is an XDR `ScVal` decoded
+  to a typed value (integer, string, address, bytes, map, etc.) and stored in the
+  `soroban_invocations` table.
+- **Invocation tree** — complex transactions with nested contract-to-contract calls have
+  their full invocation hierarchy decoded from `result_meta_xdr` and stored for the
+  transaction detail tree view.
+- **Contract interface** — function signatures (names, parameter types) are extracted from
+  the contract WASM at deployment time and stored in the `soroban_contracts` table.
 
-Soroban contract interactions produce rich metadata in `result_meta_xdr` that is not available through standard Horizon API fields:
+### 5.4 Error Handling
 
-- **Contract events** — emitted via `env.events().publish()` in Soroban contracts. Each event has a type (contract/system/diagnostic), topics (up to 4 XDR values), and a data payload. These are decoded and stored for the events tab and for generating human-readable interpretations.
-- **Return values** — the return value of `invokeHostFunction` is an XDR `ScVal` that must be decoded to a typed value (integer, string, address, bytes, map, etc.).
-- **Invocation tree** — complex transactions may contain nested contract-to-contract calls. The `result_meta_xdr` encodes the full invocation tree, which is decoded to show the call hierarchy in the explorer.
-
-### 5.5 Error Handling for XDR
-
-- **Malformed XDR** — if `fromXDR()` throws, the backend logs the error with the transaction hash for investigation and returns the raw base64 XDR to the frontend with a flag indicating decode failure. The transaction is still displayed with available non-XDR fields.
-- **Unknown operation types** — new protocol versions may introduce operation types not yet supported by the SDK version in use. These are rendered as "Unknown operation" with raw XDR shown, and an alert is raised to update the SDK.
-- **Schema evolution** — Stellar protocol upgrades may change XDR schemas. The block explorer pins `stellar-sdk` to a version compatible with the target network's protocol version and updates promptly after protocol upgrades.
+- **Malformed XDR** — if `fromXDR()` throws, the Ledger Processor logs the error with the
+  transaction hash, stores the raw XDR verbatim, and marks the record with a
+  `parse_error` flag. The API returns the raw XDR to the frontend with a decode-failure
+  indicator. The transaction is still displayed with all available non-XDR fields.
+- **Unknown operation types** — new protocol versions may introduce operation types not
+  yet supported by the SDK. These are rendered as "Unknown operation" with raw XDR shown,
+  and a CloudWatch alarm is raised to trigger an SDK update.
 
 ---
 
-## 6. Estimates
+## 6. Database Schema
 
-### 6.1 Effort Breakdown by Project Part
+The block explorer owns its full PostgreSQL schema. All chain data is stored here;
+there is no dependency on an external database.
 
-#### A. Design — 35–40 days (already estimated)
+Tables for operations, events, and invocations use **native range partitioning by month**
+for efficient time-range queries and instant partition drops.
 
-#### B. AWS Architecture Setup + Stellar Horizon Infrastructure
+### 6.1 Ledgers
 
-| Task                                                    | Days   |
-| ------------------------------------------------------- | ------ |
-| VPC, subnets, security groups, IAM roles (IaC)          | 4      |
-| Lambda + API Gateway setup (NestJS deployment pipeline) | 4      |
-| CloudFront CDN + Route 53 + TLS                         | 1      |
-| Secrets Manager, CloudWatch, X-Ray                      | 2      |
-| Horizon deployment (testnet) — Docker/EC2, Captive Core | 6      |
-| Horizon deployment (mainnet) + monitoring               | 5      |
-| CI/CD pipeline (GitHub Actions → AWS)                   | 4      |
-| Staging + production environment parity                 | 4      |
-| **Subtotal**                                            | **30** |
+```sql
+CREATE TABLE ledgers (
+    sequence          BIGINT PRIMARY KEY,
+    hash              VARCHAR(64) UNIQUE NOT NULL,
+    closed_at         TIMESTAMPTZ NOT NULL,
+    protocol_version  INT NOT NULL,
+    transaction_count INT NOT NULL,
+    base_fee          BIGINT NOT NULL,
+    INDEX idx_closed_at (closed_at DESC)
+);
+```
 
-#### C. Data Indexing (Testnet + Mainnet)
+### 6.2 Transactions
 
-| Task                                                               | Days   |
-| ------------------------------------------------------------------ | ------ |
-| Horizon testnet ingestion + verification                           | 5      |
-| Horizon mainnet ingestion + catch-up                               | 5      |
-| Historical backfill (`db reingest range`) — scripting + monitoring | 4      |
-| Validate data completeness (ledgers, transactions, operations)     | 3      |
-| Horizon PostgreSQL read-only access setup + query testing          | 2      |
-| Ingestion lag monitoring + alerting                                | 2      |
-| **Subtotal**                                                       | **20** |
+```sql
+CREATE TABLE transactions (
+    id               BIGSERIAL PRIMARY KEY,
+    hash             VARCHAR(64) UNIQUE NOT NULL,
+    ledger_sequence  BIGINT REFERENCES ledgers(sequence),
+    source_account   VARCHAR(56) NOT NULL,
+    fee_charged      BIGINT NOT NULL,
+    successful       BOOLEAN NOT NULL,
+    result_code      VARCHAR(50),
+    envelope_xdr     TEXT NOT NULL,
+    result_xdr       TEXT NOT NULL,
+    memo_type        VARCHAR(20),
+    memo             TEXT,
+    created_at       TIMESTAMPTZ NOT NULL,
+    parse_error      BOOLEAN DEFAULT FALSE,
+    INDEX idx_hash (hash),
+    INDEX idx_source (source_account, created_at DESC),
+    INDEX idx_ledger (ledger_sequence)
+);
+```
+
+### 6.3 Operations
+
+```sql
+CREATE TABLE operations (
+    id              BIGSERIAL PRIMARY KEY,
+    transaction_id  BIGINT REFERENCES transactions(id) ON DELETE CASCADE,
+    type            VARCHAR(50) NOT NULL,
+    details         JSONB NOT NULL,
+    INDEX idx_tx (transaction_id),
+    INDEX idx_details (details) USING GIN
+) PARTITION BY RANGE (transaction_id);
+```
+
+### 6.4 Soroban Contracts
+
+```sql
+CREATE TABLE soroban_contracts (
+    contract_id        VARCHAR(56) PRIMARY KEY,
+    wasm_hash          VARCHAR(64),
+    deployer_account   VARCHAR(56),
+    deployed_at_ledger BIGINT REFERENCES ledgers(sequence),
+    contract_type      VARCHAR(50),  -- 'token', 'dex', 'lending', 'nft', 'other'
+    is_sac             BOOLEAN DEFAULT FALSE,
+    metadata           JSONB,
+    search_vector      TSVECTOR GENERATED ALWAYS AS (
+                           to_tsvector('english', coalesce(metadata->>'name', ''))
+                       ) STORED,
+    INDEX idx_type (contract_type),
+    INDEX idx_search (search_vector) USING GIN
+);
+```
+
+### 6.5 Soroban Invocations
+
+```sql
+CREATE TABLE soroban_invocations (
+    id               BIGSERIAL PRIMARY KEY,
+    transaction_id   BIGINT REFERENCES transactions(id) ON DELETE CASCADE,
+    contract_id      VARCHAR(56) REFERENCES soroban_contracts(contract_id),
+    caller_account   VARCHAR(56),
+    function_name    VARCHAR(100) NOT NULL,
+    function_args    JSONB,
+    return_value     JSONB,
+    successful       BOOLEAN NOT NULL,
+    ledger_sequence  BIGINT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL,
+    INDEX idx_contract (contract_id, created_at DESC),
+    INDEX idx_function (contract_id, function_name)
+) PARTITION BY RANGE (created_at);
+```
+
+### 6.6 Soroban Events (CAP-67)
+
+```sql
+CREATE TABLE soroban_events (
+    id               BIGSERIAL PRIMARY KEY,
+    transaction_id   BIGINT REFERENCES transactions(id) ON DELETE CASCADE,
+    contract_id      VARCHAR(56) REFERENCES soroban_contracts(contract_id),
+    event_type       VARCHAR(20) NOT NULL,  -- 'contract', 'system', 'diagnostic'
+    topics           JSONB NOT NULL,
+    data             JSONB NOT NULL,
+    ledger_sequence  BIGINT NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL,
+    INDEX idx_contract (contract_id, created_at DESC),
+    INDEX idx_topics (topics) USING GIN
+) PARTITION BY RANGE (created_at);
+```
+
+### 6.7 Event Interpretations
+
+```sql
+CREATE TABLE event_interpretations (
+    id                   BIGSERIAL PRIMARY KEY,
+    event_id             BIGINT REFERENCES soroban_events(id) ON DELETE CASCADE,
+    interpretation_type  VARCHAR(50) NOT NULL,  -- 'swap', 'transfer', 'mint', 'burn'
+    human_readable       TEXT NOT NULL,
+    structured_data      JSONB NOT NULL,
+    INDEX idx_type (interpretation_type)
+);
+```
+
+### 6.8 Tokens
+
+```sql
+CREATE TABLE tokens (
+    id               SERIAL PRIMARY KEY,
+    asset_type       VARCHAR(10) NOT NULL CHECK (asset_type IN ('classic', 'sac', 'soroban')),
+    asset_code       VARCHAR(12),
+    issuer_address   VARCHAR(56),
+    contract_id      VARCHAR(56) REFERENCES soroban_contracts(contract_id),
+    name             VARCHAR(100),
+    total_supply     NUMERIC(28, 7),
+    holder_count     INT DEFAULT 0,
+    metadata         JSONB,
+    UNIQUE (asset_code, issuer_address),
+    UNIQUE (contract_id)
+);
+```
+
+### 6.9 Partitioning and Retention
+
+Tables `soroban_invocations` and `soroban_events` are partitioned by month using native
+PostgreSQL range partitioning. A cleanup Lambda (EventBridge daily) creates partitions
+2 months ahead and drops partitions older than the retention window if storage constraints
+require it. Ledger and transaction tables are not partitioned and are kept indefinitely.
+
+---
+
+## 7. Estimates
+
+### 7.1 Effort Breakdown by Project Part
+
+#### A. Design — 35–40 days (runs before / in parallel with Phase 1)
+
+#### B. AWS Architecture + Galexie Infrastructure
+
+| Task | Days |
+|------|------|
+| VPC, subnets, security groups, IAM roles (CDK) | 4 |
+| ECS Fargate cluster + Galexie task definition + S3 bucket | 5 |
+| Galexie configuration and testnet validation | 3 |
+| Lambda + API Gateway setup (NestJS deployment pipeline) | 4 |
+| CloudFront CDN + Route 53 + TLS | 1 |
+| Secrets Manager, CloudWatch dashboards, X-Ray | 2 |
+| Historical backfill ECS task + monitoring | 5 |
+| CI/CD pipeline (GitHub Actions → CDK) | 4 |
+| Staging + production environment parity | 4 |
+| **Subtotal** | **32** |
+
+#### C. Data Ingestion Pipeline
+
+| Task | Days |
+|------|------|
+| Ledger Processor Lambda — XDR parse + DB write (ledgers, txs, ops) | 6 |
+| Ledger Processor — Soroban invocations + CAP-67 events extraction | 5 |
+| Ledger Processor — contract deployments + token detection | 4 |
+| Event Interpreter Lambda — human-readable summaries | 5 |
+| Backfill validation — gap detection, idempotency checks | 3 |
+| Ingestion lag monitoring + alerting | 2 |
+| **Subtotal** | **25** |
 
 #### D. Core API Endpoints (NestJS)
 
-| Task                                                             | Days   |
-| ---------------------------------------------------------------- | ------ |
-| NestJS project scaffolding, module structure, TypeORM setup      | 3      |
-| Network stats endpoint                                           | 1      |
-| Transactions endpoints (list + detail + operation tree)          | 9      |
-| Ledgers endpoints (list + detail)                                | 3      |
-| Tokens endpoints (list + detail + transactions)                  | 5      |
-| Contracts endpoints (detail + interface + invocations + events)  | 9      |
-| NFTs endpoints (list + detail + transfers)                       | 5      |
-| Liquidity Pools endpoints (list + detail + transactions + chart) | 6      |
-| Search endpoint (full-text + prefix matching)                    | 4      |
-| XDR decoding service (envelope, result, result_meta, fee_meta)   | 8      |
-| Human-readable operation summaries + Soroban interpretation      | 7      |
-| Cursor-based pagination (Horizon passthrough + direct SQL)       | 3      |
-| Rate limiting, API key auth, error handling, health checks       | 3      |
-| Caching layer (in-memory + CloudFront TTL configuration)         | 3      |
-| **Subtotal**                                                     | **72** |
+| Task | Days |
+|------|------|
+| NestJS project scaffolding, module structure, Drizzle ORM setup | 3 |
+| Network stats endpoint | 1 |
+| Transactions endpoints (list + detail + operation tree) | 9 |
+| Ledgers endpoints (list + detail) | 3 |
+| Tokens endpoints (list + detail + transactions) | 5 |
+| Contracts endpoints (detail + interface + invocations + events) | 9 |
+| NFTs endpoints (list + detail + transfers) | 5 |
+| Liquidity Pools endpoints (list + detail + transactions + chart) | 6 |
+| Search endpoint (full-text + prefix matching) | 4 |
+| XDR decoding service (raw XDR → structured for advanced view) | 4 |
+| Cursor-based pagination | 3 |
+| Rate limiting, API key auth, error handling, health checks | 3 |
+| Caching layer (in-memory + CloudFront TTL configuration) | 3 |
+| **Subtotal** | **58** |
 
 #### E. Frontend Components + API Integration
 
-| Task                                                                 | Days   |
-| -------------------------------------------------------------------- | ------ |
-| React project scaffolding, routing, design system setup              | 3      |
-| Shared components (header, nav, search bar, copy button, timestamps) | 3      |
-| Home page (chain overview, latest transactions + ledgers)            | 2      |
-| Transactions page (paginated table, filters)                         | 2      |
-| Transaction detail page — normal mode (graph/tree view)              | 5      |
-| Transaction detail page — advanced mode (raw data, XDR)              | 4      |
-| Ledgers page (paginated table)                                       | 1      |
-| Ledger detail page                                                   | 2      |
-| Tokens page (list, filters)                                          | 2      |
-| Token detail page (summary + transactions)                           | 2      |
-| Contract detail page (summary + interface + invocations + events)    | 7      |
-| NFTs page (list, filters)                                            | 2      |
-| NFT detail page (media preview, metadata, transfers)                 | 5      |
-| Liquidity Pools page (list, filters)                                 | 2      |
-| Liquidity Pool detail page (summary + charts)                        | 5      |
-| Search results page                                                  | 6      |
-| Error states, loading skeletons, empty states                        | 3      |
-| Polling, freshness indicators, responsive layout                     | 2      |
-| **Subtotal**                                                         | **60** |
+| Task | Days |
+|------|------|
+| React project scaffolding, routing, design system setup | 3 |
+| Shared components (header, nav, search bar, copy button, timestamps) | 3 |
+| Home page (chain overview, latest transactions + ledgers) | 2 |
+| Transactions page (paginated table, filters) | 2 |
+| Transaction detail page — normal mode (graph/tree view) | 5 |
+| Transaction detail page — advanced mode (raw data, XDR) | 4 |
+| Ledgers page (paginated table) | 1 |
+| Ledger detail page | 2 |
+| Tokens page (list, filters) | 2 |
+| Token detail page (summary + transactions) | 2 |
+| Contract detail page (summary + interface + invocations + events) | 7 |
+| NFTs page (list, filters) | 2 |
+| NFT detail page (media preview, metadata, transfers) | 5 |
+| Liquidity Pools page (list, filters) | 2 |
+| Liquidity Pool detail page (summary + charts) | 5 |
+| Search results page | 6 |
+| Error states, loading skeletons, empty states | 3 |
+| Polling, freshness indicators, responsive layout | 2 |
+| **Subtotal** | **60** |
 
 #### F. Testing
 
-| Task                                           | Days   |
-| ---------------------------------------------- | ------ |
-| Unit tests — API endpoints (NestJS)            | 8      |
-| Unit tests — XDR parsing + operation summaries | 5      |
-| Load testing (1M baseline scenario)            | 4      |
-| Bug fixing + stabilization buffer              | 15     |
-| **Subtotal**                                   | **32** |
+| Task | Days |
+|------|------|
+| Unit tests — API endpoints (NestJS) | 8 |
+| Unit tests — XDR parsing + ingestion correctness | 7 |
+| Integration tests — end-to-end (ingestion → API → frontend) | 5 |
+| Load testing (1M baseline scenario) | 4 |
+| Security audit (OWASP Top 10) | 3 |
+| Bug fixing + stabilization buffer | 15 |
+| **Subtotal** | **42** |
 
-### 6.2 Summary
+### 7.2 Summary
 
-| Project Part                         | Days        |
-| ------------------------------------ | ----------- |
-| A. Design                            | 35–40       |
-| B. AWS Architecture + Horizon Infra  | 30          |
-| C. Data Indexing (Testnet + Mainnet) | 20          |
-| D. Core API Endpoints                | 72          |
-| E. Frontend Components + Integration | 60          |
-| F. Testing                           | 32          |
-| **Total (incl. design)**             | **249–254** |
+| Project Part | Days |
+|--------------|------|
+| A. Design | 35–40 |
+| B. AWS Architecture + Galexie Infrastructure | 32 |
+| C. Data Ingestion Pipeline | 25 |
+| D. Core API Endpoints | 58 |
+| E. Frontend Components + Integration | 60 |
+| F. Testing | 42 |
+| **Total (incl. design)** | **252–257** |
 
-### 6.3 Cost Estimation
+### 7.3 Cost Estimation (AWS, monthly)
 
-#### Traffic Assumptions
+#### Low Traffic (1M requests/month)
 
-Two traffic scenarios are modeled:
+| Service | Configuration | Monthly Cost |
+|---------|---------------|--------------|
+| ECS Fargate — Galexie | 1 vCPU / 2 GB RAM, continuous | ~$36 |
+| RDS PostgreSQL | db.r6g.large, Single-AZ | ~$175 |
+| RDS Storage | 1 TB gp3 (full chain data from 2023) | ~$115 |
+| API Gateway | 1M requests + 0.5 GB cache | ~$4 |
+| Lambda — API handlers | 800K invocations, 512 MB ARM | ~$5 |
+| Lambda — Ingestion workers | ~500K invocations (Ledger Processor) | ~$10 |
+| CloudFront | 10 GB transfer | ~$5 |
+| S3 | Ledger files (transient) + API docs | ~$5 |
+| NAT Gateway | 1x, ~100 GB data | ~$40 |
+| CloudWatch + X-Ray | Logs, metrics, tracing | ~$20 |
+| Secrets Manager + Route 53 | Credentials + DNS | ~$10 |
+| **Total** | | **~$425/month** |
 
-- **Low traffic (launch):** **1M API requests/month** (~0.4 req/sec average, ~2 req/sec peak). Reflects a new Stellar block explorer entering an ecosystem with established competitors (StellarExpert). Infrastructure costs dominate at this volume.
-- **High traffic (growth):** **10M API requests/month** (~3.8 req/sec average, ~15 req/sec peak). Represents meaningful traction and sustained organic adoption.
+#### Scaling Path to High Traffic (10M requests/month)
 
-The architecture scales between these levels by adding Lambda provisioned concurrency and an RDS read replica — no re-architecture required.
+| Change | Trigger | Added Cost |
+|--------|---------|-----------|
+| Add Lambda provisioned concurrency (5 instances) | >2 req/s avg | +$75 |
+| Add RDS read replica (db.r6g.large) | Primary CPU >60% | +$175 |
+| Enable RDS Multi-AZ | SLA >99.9% needed | +$175 |
+| Expand VPC to Multi-AZ | With Multi-AZ RDS | +$35 (NAT) |
+| API Gateway + Lambda growth | Proportional | +$30 |
+| CloudFront / data transfer growth | Proportional | +$20 |
+| **Estimated total at 10M requests/month** | | **~$935/month** |
 
-#### Monthly Costs — Low Traffic (1M requests)
+### 7.4 Three-Milestone Delivery Plan
 
-At 1M requests/month, costs are dominated by fixed infrastructure (NAT, optional RDS for derived data). Horizon may be self-hosted (separate cost) or use a hosted provider.
+#### Deliverable 1 — Indexing Pipeline & Core Infrastructure
 
-| Service        | Configuration                                        | Monthly Cost                  |
-| -------------- | ---------------------------------------------------- | ----------------------------- |
-| API Gateway    | 1M requests                                          | $4                            |
-| Lambda         | 800K invocations, 1024MB ARM                         | $5                            |
-| RDS PostgreSQL | Optional, db.r6g.large Single-AZ (derived data only) | $190 (or $0 if no derived DB) |
-| RDS Storage    | 500GB gp3 (if RDS used)                              | $115                          |
-| CloudFront     | 10GB transfer                                        | $5                            |
-| Data Transfer  | 10GB outbound                                        | $5                            |
-| CloudWatch     | Logs, metrics                                        | $50                           |
-| NAT Gateway    | 1x, 100GB                                            | $40                           |
-| Other          | Secrets, Route53                                     | $50                           |
-| Horizon        | Self-hosted or hosted (not in this table)             | —                             |
+Galexie ECS Fargate task running on mainnet, writing `LedgerCloseMeta` XDR files to S3
+every ~5–6 seconds. Lambda Ledger Processor triggered per file, parsing and writing
+ledgers, transactions, operations, Soroban invocations, and CAP-67 events to a dedicated
+RDS PostgreSQL database. Historical backfill from Soroban mainnet activation ledger
+(late 2023). NestJS API scaffolding with core modules. OpenAPI specification. AWS CDK
+infrastructure-as-code. CI/CD pipeline. CloudWatch dashboards and ingestion lag alarms.
 
-**Total (with optional RDS):** ~$465/month. Lower if no block-explorer RDS; Horizon cost is separate (self-hosted or third-party).
+**Acceptance criteria:**
+1. S3 bucket contains consecutive `LedgerCloseMeta` files with timestamps matching
+   mainnet ledger close times
+2. RDS `ledgers` table contains all ledgers from backfill start through current tip with
+   no gaps
+3. RDS `soroban_events` table contains CAP-67 events for known Soroswap/Aquarius/Phoenix
+   transactions (spot-checked by transaction hashes)
+4. `cdk deploy` from a clean AWS account produces the full working stack with no manual
+   steps
+5. CloudWatch dashboard accessible; Galexie lag alarm fires correctly in staging
 
-#### Scaling Path to High Traffic (10M requests)
+**Budget: $26,240 (20% of total)**
 
-| Change                               | Trigger           | Added Cost |
-| ------------------------------------ | ----------------- | ---------- |
-| Add Lambda provisioned (5 instances) | >2 req/sec avg    | +$75       |
-| Add RDS read replica (db.r6g.large)  | Primary CPU >60%  | +$190      |
-| Enable RDS Multi-AZ                  | SLA >99.9% needed | +$190      |
-| Expand VPC to Multi-AZ               | With Multi-AZ RDS | +$35 (NAT) |
-| API Gateway + Lambda growth          | Proportional      | +$30       |
-| CloudFront / data transfer growth    | Proportional      | +$20       |
+---
 
-**Estimated cost at 10M requests/month:** ~$1,100 – $1,200/month.
+#### Deliverable 2 — Complete API + Frontend
 
-### 6.4 Three-Phase Delivery Plan
+All REST API endpoints live and serving mainnet data: transactions (list + detail),
+ledgers (list + detail), accounts (detail + history), contracts (detail + invocations +
+events), tokens, NFTs, liquidity pools, search (exact match + prefix). Human-readable
+event interpretation for known patterns (swaps, transfers, mints) on transaction detail
+pages. React SPA deployed via CloudFront with all pages. Rate limiting and response
+caching configured on API Gateway.
 
-#### Phase 1 — Infrastructure & Core Backend (Month 1)
+**Acceptance criteria:**
+1. All API endpoints return schema-valid responses for mainnet entity IDs provided by
+   the reviewer
+2. Soroban invocations on Contract Detail page show function name, arguments, and return
+   value (not raw XDR) for at least 3 known contract transactions
+3. CAP-67 events appear on Transaction Detail page under Events tab with decoded topics
+   and data fields (not raw XDR)
+4. Global search redirects to correct detail page for an exact transaction hash, account
+   ID, and contract ID
+5. React frontend publicly accessible at staging URL; all pages render live mainnet data
 
-- **AWS infrastructure setup** — VPC topology (public/private subnets, NAT, security groups), IAM least-privilege policies, IaC (Terraform/CDK), secrets management, CloudWatch dashboards + X-Ray tracing
-- **Horizon setup** — Run Horizon (self-hosted or hosted); configure ingestion (history archives, Captive Core), testnet deployment, optional backfill with `db reingest range` in chunks
-- **Database design** — Horizon's schema as source of truth; optional block-explorer DB schema for derived data (search, event interpretations), versioned migrations, testnet seed data
-- **API specification** — OpenAPI 3.0 for all endpoints, cursor-based pagination contracts, rate limiting tiers
-- **NestJS scaffolding** — Project structure, TypeORM setup, core modules (Transactions, Ledgers, Network stats), Horizon REST API integration, XDR decoding service (core)
-- **CI/CD pipeline** — GitHub Actions → AWS deployment pipeline
+**Budget: $39,360 (30% of total)**
 
-#### Phase 2 — Feature Complete (Month 2)
+---
 
-- **Horizon mainnet deployment** — Mainnet ingestion, historical backfill, ingestion lag monitoring + alerting
-- **Remaining API endpoints** — Tokens, Contracts, NFTs, Liquidity Pools, Search (full-text + prefix matching), human-readable operation summaries + Soroban interpretation
-- **Caching + rate limiting + auth** — In-memory cache, CloudFront TTL, API key authentication, per-key/per-IP rate limiting
-- **Frontend** — React SPA with all pages (Home, Transaction List/Detail, Ledger Detail, Account Detail, Contract Detail, Tokens, NFTs, Liquidity Pools, Search), shared components (header, search bar, linked identifiers, copy buttons, polling indicator)
-- **CloudFront CDN deployment** with S3 origin
+#### Deliverable 3 — Mainnet Launch
 
-#### Phase 3 — Testing, Polish & Launch (Month 3)
+Production deployment on mainnet at public URL. Unit and integration tests covering XDR
+parsing correctness, API endpoint responses, and event interpretation logic. Load test
+results documented (1M baseline, 10M stress). Security audit checklist (OWASP Top 10,
+IAM least-privilege, no public RDS endpoint). Monitoring dashboards and alerting active
+and accessible to Stellar team. Full API reference documentation published. GitHub
+repository made public. Professional user testing completed. 7-day post-launch monitoring
+report.
 
-- **Testing** — Unit tests (API + XDR parsing), E2E integration tests (Horizon → API → frontend), load testing (1M baseline, 10M stress test)
-- **Security audit** — OWASP Top 10, CORS, API key leakage
-- **Performance tuning** — Query plans, index optimization, Lambda cold start evaluation, cost optimization (right-size RDS, Reserved Instances)
-- **Staging → production** — Environment setup, DNS/TLS (API Gateway + CloudFront), monitoring go-live (PagerDuty/Slack alerting, runbooks)
-- **Bug fixing + stabilization**
-- **Documentation** — API reference, explorer usage guide, stakeholder handoff
+**Acceptance criteria:**
+1. Block explorer publicly accessible at production URL, showing live mainnet data with
+   ledger sequences matching network tip within 30 seconds
+2. GitHub repository public; `cdk deploy` from README works in a fresh AWS account
+3. CloudWatch dashboard accessible to Stellar team (read-only IAM role); all alarms OK;
+   Galexie ingestion lag <30 s from network tip
+4. Load test report: p95 <200 ms at 1M requests/month equivalent; error rate <0.1%
+5. Security checklist signed off: no wildcard IAM, RDS has no public endpoint, all
+   secrets in Secrets Manager, all API inputs validated
+6. 7-day post-launch monitoring report: uptime %, API error rate, p95 latency, Galexie
+   ingestion lag per day
 
-**Total timeline: 3 months.** Design (35–40 days) runs before or in parallel with Phase 1.
+**Budget: $52,480 (40% of total + professional user testing)**
 
-### 6.5 Risk Areas and Assumptions
+### 7.5 Risk Areas
 
-- **AWS knowledge concentration**
-
-  - Impact: infrastructure work depends on a narrow skill set; unavailability of the AWS-experienced developer blocks deployments
-  - Mitigation: document all IaC decisions early; cross-train a second team member on AWS during Phase 1
-
-- **Frontend blockchain learning curve**
-
-  - Impact: transaction detail page (graph/tree view) and contract page require understanding Stellar data structures
-  - Mitigation: prepare mock API responses with realistic Stellar data early; build frontend against mocks while learning the domain
-
-- **Horizon API gaps for Soroban-specific data**
-
-  - Impact: some endpoints (contract interface, NFT metadata, event interpretations) may require direct PostgreSQL queries or XDR parsing that Horizon's REST API does not cover
-  - Mitigation: audit Horizon API coverage in Phase 1; plan for read-only DB fallback from the start
-
-- **Historical backfill time on mainnet**
-
-  - Impact: `db reingest range` for full mainnet history can take days; delays mainnet launch if full history is required
-  - Mitigation: start backfill in Phase 1 as a background task; consider launching with recent history only and backfilling incrementally
-
-- **Transaction graph/tree view complexity**
-
-  - Impact: the normal-mode visualization (nested operation tree, Soroban call hierarchy) is the most complex frontend component
-  - Mitigation: allocate 10 days (largest single frontend task); provide sample tree structures from the blockchain team; consider using an existing tree/graph library (e.g. React Flow)
-
-- **NFT and Liquidity Pool data availability**
-
-  - Impact: Stellar's NFT ecosystem is nascent; liquidity pool chart data requires aggregation not natively provided by Horizon
-  - Mitigation: build these pages last (Phase 2); design API to gracefully return empty states; chart data aggregation may require a lightweight background worker
-
-- **Conservative estimate assumption**
-  - All estimates include buffer for context switching, code review, and ramp-up time
-  - No parallel sprint overlap assumed within a single developer — each task is sequential per person
-  - Design phase (35–40 days) is assumed to run before or overlap with Phase 1; not included in the 17-week execution timeline
+- **XDR schema evolution** — new CAPs may change `LedgerCloseMeta` structure. Mitigated
+  by tracking Stellar Core releases; protocol upgrades are well-announced.
+- **Frontend blockchain learning curve** — transaction detail tree view requires deep
+  understanding of Stellar data structures. Mitigated by mock API responses built in
+  parallel with backend development.
+- **Backfill volume** — indexing from Soroban activation to present will produce hundreds
+  of GB of data. Mitigated by running backfill as a background task from day 1 and
+  launching with recent history if backfill is not complete at milestone 1.
+- **NFT and Liquidity Pool data** — Stellar's NFT ecosystem is nascent; LP chart data
+  requires aggregation. Mitigated by building these pages last; graceful empty states
+  designed from the start.
+- **Event interpretation coverage** — human-readable summaries rely on heuristics per
+  known protocol (Soroswap, Aquarius, Phoenix). Unknown contracts will show raw decoded
+  event data. Coverage expands incrementally as new protocols are identified.
