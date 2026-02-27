@@ -1,6 +1,6 @@
 # Stellar Block Explorer — Technical Design (Post-Review)
 
-> This document supersedes `summary.md`. It incorporates changes required by reviewer
+> This document supersedes `soroban-first-block-explorer.md`. It incorporates changes required by reviewer
 > feedback: the indexing layer is rebuilt around self-hosted Galexie (direct ledger
 > processing) replacing the deprecated Horizon API, the block explorer now owns its own
 > database, and component ownership is explicitly demarcated.
