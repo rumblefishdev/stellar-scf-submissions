@@ -1,5 +1,9 @@
 # Technical Architecture: X402 Facilitator with Bazaar Discovery Support for Stellar
 
+*Revised 2026-10-12: incorporates reviewer-requested detail on Bazaar discovery-layer specifics,
+search ranking and quality evaluation, Stellar-specific facilitator behavior, and the conformance
+testing approach.*
+
 ## 1. Overview
 
 This document describes the technical architecture for a production x402 payment facilitator on
@@ -77,6 +81,43 @@ Any SEP-41 token is accepted, with USDC as the default. The facilitator is non-c
 design — funds move directly from payer to payee inside the signed contract invocation; the
 facilitator never holds client funds.
 
+### 3.1.1 Auth-entry validation, strict per field
+
+Step 3 above is not a single check but seven independent ones, each validated before a payment is
+accepted:
+
+- **Signature** — cryptographically verified against the declared signer. Validation is
+  signer-type-agnostic: a Soroban custom-account (smart wallet) signer exposing its own
+  `__check_auth(context, signature_payloads)` entry point is verified through the network's own
+  authorization/simulation flow, the same path a plain Ed25519-keypair account takes — the
+  facilitator never hand-rolls signature checks that would only work for one signer type. The
+  facilitator also accepts both the legacy Soroban address-credential format and CAP-71's V2
+  (`SOROBAN_CREDENTIALS_ADDRESS_V2`) format: Stellar Protocol 28 (testnet since 2026-08-27, mainnet
+  vote 2026-09-16) makes `stellar-sdk` v17 clients emit V2-signed auth entries by default, so
+  accepting only the legacy format would silently reject a growing share of valid payments as
+  adoption rolls out.
+- **Declared call** — exactly one `invokeHostFunction` operation, function name and contract
+  address matching what the payment terms specified, with no substitution.
+- **Asset** — the SEP-41 token contract matches the asset named in `PaymentRequirements`.
+- **Amount** — matches exactly for `exact`; for `upto` (§6), matches against the signed ceiling
+  rather than a fixed amount.
+- **Recipient** — the `to` argument matches the seller's `payTo` address.
+- **Replay** — the native Soroban auth-entry nonce (or, for `upto`, the proxy contract's own
+  nonce) has not been consumed before.
+- **Expiry** — `signatureExpirationLedger` has not already passed at verify time, and is re-
+  simulated against current ledger state rather than trusted as submitted; it is also capped
+  against a configured maximum future window, closing the risk of a stale-but-not-yet-expired
+  signature being replayed long after it was issued.
+
+### 3.1.2 Trustline onboarding
+
+Classic Stellar assets wrapped as SEP-41 contracts (as opposed to natively Soroban-issued tokens)
+require the buyer to hold a trustline before they can receive or hold the asset. Pre-flight
+simulation detects a missing trustline before payment is attempted and returns an actionable
+error, and the buyer-side SDK surfaces this as an explicit "establish trustline" step rather than a
+generic failure — preserving the goal of letting a developer deploy and test against a
+discoverable endpoint in under an hour, even starting from a fresh wallet.
+
 ### 3.2 Fee sponsorship
 
 Buyers never need to hold XLM. Because the client signs only authorization entries (not a full
@@ -99,10 +140,14 @@ an independent sequence number, rotated across concurrent settlements.
 
 This capability already exists in the ecosystem (OpenZeppelin's `relayer-plugin-channels`), but is
 AGPL-3.0 licensed, which conflicts with a permissive-license requirement for facilitator
-dependencies. Two compliant paths: (a) call an externally-hosted channel-account service over the
-network rather than linking its code directly, which does not trigger AGPL's copyleft obligations,
-or (b) implement a permissively-licensed channel-account pool directly — the underlying pattern is
-a well-documented Stellar technique, not proprietary to any one implementation.
+dependencies. Rather than depend on it — either directly, which would trigger AGPL's copyleft
+obligations, or via OpenZeppelin's hosted channel-account service, which would add an operational
+dependency on a third party's uptime for a core piece of settlement infrastructure — this design
+**reimplements a channel-account pool under a permissive license**. The underlying pattern is a
+well-documented Stellar technique, not proprietary to any one implementation, so this is
+reimplementing known behavior rather than novel design work. The full dependency tree is re-audited
+at each delivery milestone, not just checked once at the start, to keep this guarantee intact as
+the codebase grows.
 
 ## 4. Bazaar Discovery Layer
 
@@ -136,17 +181,30 @@ transaction behind them.
 
 Parameterized routes (e.g. `/users/[id]`) are normalized to a `routeTemplate` (`/users/:userId`)
 so repeated calls to the same pattern consolidate into one catalog entry instead of spamming
-one-per-argument-value. The facilitator may report cataloging outcomes via a base64-encoded JSON
+one-per-argument-value. Before a `routeTemplate` is used as a catalog key, it is percent-decoded
+and then re-encoded; a mismatch between that result and the original is rejected outright. This
+closes a listing-spoofing path where a crafted percent-encoding could look distinct from an
+existing legitimate entry's template while decoding to the same normalized path — otherwise able
+to shadow, collide with, or be confused for another seller's entry in `GET /discovery/resources`
+results. MCP tools have no HTTP route to normalize this way, so they are keyed instead by the
+composite of `resource.url` and `input.toolName`, which together uniquely identify a tool entry.
+
+The facilitator may report cataloging outcomes via a base64-encoded JSON
 `EXTENSION-RESPONSES` header (`{"bazaar":{"status":"success"|"processing"|"rejected", ...}}`), but
 this is best-effort — its absence carries no signal and should not be relied upon by clients.
 
 ### 4.2 Discovery API
 
-- `GET /discovery/resources` — filtered catalog listing (`type`, `payTo`, `network`, `extensions`,
-  `limit`, `offset`). Returns each resource's `accepts` terms, its `extensions.bazaar.info`, and
-  `lastUpdated`.
+- `GET /discovery/resources` — filtered catalog listing on six filters: `type`, `payTo`, `network`,
+  `extensions`, `limit`, `offset`. Returns each resource's `accepts` terms, its
+  `extensions.bazaar.info`, and `lastUpdated`.
 - `GET /discovery/search` — natural-language query with ranked results (see §4.3), covering both
-  HTTP endpoints and MCP tools.
+  HTTP endpoints and MCP tools. Pagination is cursor-based (an opaque `cursor` token, passed back
+  on the next request) rather than offset-based, since the underlying ranked set can shift between
+  queries as new settlements land. Every response also carries a `partialResults: boolean` field,
+  `true` whenever the quality-score recompute pass (§4.3) hasn't finished for the full candidate
+  set at query time, so a caller can distinguish "these are all the matches" from "more may still
+  be indexing."
 
 The index is offchain by default, consistent with keeping settlement (onchain, minimal, auditable)
 separate from discovery (offchain, mutable, iterative).
@@ -156,7 +214,19 @@ separate from discovery (offchain, mutable, iterative).
 Ranking combines three signal categories, following the pattern established by the existing x402
 reference implementation:
 
-1. **Retrieval relevance** — hybrid text/semantic match against the query.
+1. **Retrieval relevance** — **hybrid lexical + dense retrieval, fused with Reciprocal Rank Fusion
+   (RRF)**, run on the ClickHouse cluster already operated for the team's other Stellar services
+   (Prices API, Block Explorer), so no new datastore is introduced for the Bazaar catalog.
+   - *Lexical*: a token-frequency (TF-IDF-style) relevance score over each resource's
+     `serviceName`, `tags`, and `info` description fields, computed via a materialized per-token
+     document-frequency table with `ngrambf_v1`-indexed candidate filtering.
+   - *Dense*: vector similarity (`cosineDistance()`, native on `Array(Float32)` columns) between
+     the query embedding and each resource's description embedding, computed with a small
+     self-hosted sentence-transformer model (e.g. `all-MiniLM-L6-v2`) — avoiding a live external
+     inference API as a dependency for a facilitator that has to hit 99%+ uptime. At the catalog's
+     expected scale (thousands of listings), an unindexed `ORDER BY cosineDistance(...) LIMIT k`
+     scan is cheap on ClickHouse's columnar engine; a native vector index is a scaling path if the
+     catalog later grows enough to need one.
 2. **Objective quality score** — buyer reach (distinct buyers served in a trailing window),
    transaction volume, recency of activity, metadata completeness (penalizing placeholder
    descriptions), and a hosting penalty for resources on shared/tunneling infrastructure.
@@ -168,6 +238,27 @@ published, reusable open-source implementation of this ranking function exists a
 x402 ecosystem today (checked against both the Coinbase and GoPlausible/Algorand reference
 implementations) — this scoring function is designed from first principles for Stellar, informed
 by the signal categories above.
+
+**Quality evaluation.** Ranking quality is measured by **nDCG@10** (normalized discounted
+cumulative gain at rank 10) — appropriate here because result relevance is graded, not binary —
+against a fixed, human-labeled set of 50 natural-language queries over 25 seeded resources, each
+query-result pair graded 0–3 before any ranking code is evaluated against it, to avoid biasing the
+labels toward whatever the algorithm already returns. Ranking must reach **nDCG@10 ≥ 0.75** against
+this fixed set before it ships beyond curation-only mode; short of that bar, curated ordering is
+used instead. The evaluation is re-run at every delivery milestone, then monthly for the first 6
+months post-launch, since the discovery spec and its ranking signal set are both still evolving
+under the x402 Foundation.
+
+### 4.4 Catalog storage
+
+Catalog entries live in a ClickHouse `ReplacingMergeTree` table, keyed on the normalized
+`routeTemplate` (HTTP resources) or the `resource.url` + `input.toolName` pair (MCP tools) and
+versioned by settlement timestamp — the engine's native "latest version wins" merge semantics give
+current-state read behavior from an append-only insert stream, without needing in-place row
+updates. This fits how the data actually arrives: the only writer to the catalog is a settlement
+event (§4.1). The buyer-reach/volume/recency quality-score inputs (above) are themselves OLAP
+aggregations — `COUNT(DISTINCT buyer)`, `COUNT(*)`, `MAX(timestamp)` over rolling windows — against
+that same settlement-event log, a workload ClickHouse's columnar engine is well suited to.
 
 ## 5. MCP Discovery Server
 
@@ -234,11 +325,20 @@ This satisfies all five properties the x402 specification requires of an `upto` 
 ### 6.3 Upstream contribution
 
 This design will be proposed as `scheme_upto_stellar.md`, alongside the existing
-`scheme_upto_evm.md`, coordinated through the x402 Technical Steering Committee — Stellar's
-representation on the x402 Foundation's Governing Board provides a direct coordination channel for
-this. `batch-settlement` and `auth-capture` variants are explicitly out of scope for this proposal,
-consistent with how the base `upto` specification scopes multi-settlement/streaming patterns out of
-its first version.
+`scheme_upto_evm.md` and `scheme_upto_svm.md`, coordinated through the x402 Technical Steering
+Committee — Stellar's representation on the x402 Foundation's Governing Board provides a direct
+coordination channel for this. `batch-settlement` and `auth-capture` variants are explicitly out
+of scope for this proposal, consistent with how the base `upto` specification scopes
+multi-settlement/streaming patterns out of its first version.
+
+### 6.4 Post-grant spec tracking
+
+The discovery and settlement-scheme specs are both still evolving under the x402 Foundation, so
+upkeep matters as much as the initial implementation. For the first 6 months after mainnet launch,
+upstream spec changes (the `x402-foundation/x402` repo's `specs/` directory and Discussions
+category) are reviewed on a monthly cadence, with a compatibility patch filed within 2 weeks of any
+breaking change — run alongside the same-cadence ranking-quality re-measurement in §4.3. Changes
+and resulting patches are logged in the project's own public changelog.
 
 ## 7. SDKs
 
@@ -267,17 +367,33 @@ AGPL-licensed.
   exposure as fee-sponsor is the network fee itself, bounded by the verification checks in §3.2.
 - **`upto` proxy contract** is new, first-of-its-kind code and requires independent security review
   before mainnet deployment, in addition to the facilitator's own audit.
-- **Conformance testing** is performed at the wire level against unmodified canonical x402 clients,
-  not just internal unit tests, to catch protocol-level divergence from the spec rather than only
-  implementation bugs.
+- **Conformance testing** is performed at the wire level against an unmodified canonical client
+  from the `x402-foundation/x402` repo's own end-to-end test suite, not just internal unit tests,
+  to catch protocol-level divergence from the spec rather than only implementation bugs. Stellar's
+  `exact` scheme is already a first-class mechanism in that suite's client, server, and facilitator
+  roles, so this does not require contributing new Stellar test fixtures to the harness; it does
+  require standing up a thin **external facilitator proxy** — a mechanism the suite already
+  documents (`e2e/facilitators/external-proxies/`) for pointing the canonical client at a real,
+  externally-hosted facilitator rather than one of its own bundled reference implementations —
+  configured against this facilitator's testnet deployment. A passing run produces a real settled
+  transaction hash per scheme, recorded as the conformance artifact.
 - **SSRF defenses** are built into Bazaar metadata validation (§4.1) for any user-supplied URLs.
 
 ## References
 
-- [x402 Specification v2](https://github.com/coinbase/x402/blob/main/specs/x402-specification-v2.md)
-- [`scheme_exact_stellar.md`](https://github.com/coinbase/x402/blob/main/specs/schemes/exact/scheme_exact_stellar.md)
-- [`scheme_upto.md`](https://github.com/coinbase/x402/blob/main/specs/schemes/upto/scheme_upto.md) /
-  [`scheme_upto_evm.md`](https://github.com/coinbase/x402/blob/main/specs/schemes/upto/scheme_upto_evm.md)
+- [x402 Specification v2](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md) —
+  canonical repo is now under the x402 Foundation (`x402-foundation/x402`); `coinbase/x402` is a
+  lagging fork
+- [`scheme_exact_stellar.md`](https://github.com/x402-foundation/x402/blob/main/specs/schemes/exact/scheme_exact_stellar.md)
+- [`scheme_upto.md`](https://github.com/x402-foundation/x402/blob/main/specs/schemes/upto/scheme_upto.md) /
+  [`scheme_upto_evm.md`](https://github.com/x402-foundation/x402/blob/main/specs/schemes/upto/scheme_upto_evm.md) /
+  [`scheme_upto_svm.md`](https://github.com/x402-foundation/x402/blob/main/specs/schemes/upto/scheme_upto_svm.md) —
+  no `scheme_upto_stellar.md` exists yet
+- [`@x402/stellar` package](https://github.com/x402-foundation/x402/tree/main/typescript/packages/mechanisms/stellar) —
+  existing TypeScript client/server/facilitator implementation this design builds on; its
+  changelog documents the CAP-71 V2 credential patch referenced in §3.1.1
+- [E2E test suite / external facilitator proxies](https://github.com/x402-foundation/x402/tree/main/e2e) —
+  canonical conformance harness referenced in §9
 - [Bazaar (Discovery Layer) specification](https://docs.x402.org/extensions/bazaar)
 - [Stellar Docs: Authorization (`require_auth_for_args`)](https://developers.stellar.org/docs/learn/fundamentals/contract-development/authorization)
 - [SEP-0041: Stellar Token Interface](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0041.md)
