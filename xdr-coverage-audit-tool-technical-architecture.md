@@ -218,9 +218,12 @@ a pinned stellar-core source reference). Arms that occur only in older history (
 
 Release targets:
 - every ledger pattern RFP §3 names, and every §7 sighting that has a ledger shape, has an entry (tier A);
-- **pattern coverage of 100%** of the arms added in protocols 21-30 that are *in ledgers* at protocol 30;
-- **every CAP** in the per-CAP view has at least one pattern entry, or a documented "no reader-visible shape" with
-  its evidence.
+- **pattern coverage of 100%** of the arms added in protocols 21-30 that are *in ledgers* at protocol 30. Arms that
+  only arise from a consensus failure (the empty-transaction-set header arms) count as covered by a stellar-core
+  golden entry. If no golden exists and best-effort generation (§5) fails, such an arm is reported as a documented
+  gap and excluded from this target;
+- **every CAP that added an arm in protocols 21-30, and every CAP the RFP names**, has at least one pattern entry, or
+  a documented "no reader-visible shape" with its evidence.
 
 We expect about 50 entries, in three tiers. The count is an estimate, not a target:
 
@@ -301,7 +304,7 @@ Topologies:
   (§4.3). We also try to generate one by reproducing the condition CAP-83 describes: during nomination, one validator
   does not receive the proposed transaction set in time, and the network closes the ledger without it. If that works,
   the generated ledger is added next to the golden. A synthetic entry is the last resort, and it does not count
-  toward pattern coverage.
+  toward pattern coverage. §4.4 sets out how these arms count toward the coverage target.
 
 For each pattern the generator:
 1. funds fresh accounts from the private network's genesis root account;
@@ -576,7 +579,8 @@ repositories from day one, with regular status updates to SCF.
 - The Galexie data-lake input comes first; a mock RPC `getLedgers` input is later work.
 - Findings are filed upstream with a reproducing entry, not fixed by us.
 - Arm coverage across all of `LedgerCloseMetaBatch` is reported, not targeted. The only arm-level target is the
-  protocol 21-30 arms that occur in closed ledgers at protocol 30.
+  protocol 21-30 arms that occur in closed ledgers at protocol 30; consensus-only arms count through golden entries
+  (§4.4).
 - Sightings that are not ledger shapes are out of scope for the corpus (sightings table, §4.4).
 
 ## 12. Findings and disclosure
