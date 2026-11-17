@@ -193,9 +193,9 @@ XDR itself. It parses stellar-xdr at every protocol tag from v19 to v30 and list
 reachable from `LedgerCloseMetaBatch`. At protocol 30 that is **499 union arms and 28 optional fields** (56 optional
 targets, present and absent). It dates each arm to the protocol that added it, and tags it with the CAP that added
 it. CAP tags come from the stellar-xdr history, with a hand-checked override table where commit messages name the
-wrong CAP or none. Today 16 of the 38 arms added in protocols 21-30 still have no tag. In Deliverable 1 every arm
-gets a CAP tag or an explicit "no CAP" with a reason (e.g. a numbered `v0`/`v1` extension slot added for a protocol
-release).
+wrong CAP or none. Today 16 of the 38 arms added in protocols 21-30 still have no tag. In Deliverable 1 each of those
+38 arms gets a CAP tag or an explicit "no CAP" with a reason (e.g. a numbered `v0`/`v1` extension slot added for a
+protocol release).
 
 Findings from the five sample entries:
 - they already contain 123 arms (25%), mostly through incidental content of their ledgers, not their targets;
@@ -209,26 +209,26 @@ we report two numbers:
 - **pattern coverage:** arms an entry claims in `pattern_targets[]`, with expected values checked by every tool;
 - **incidental coverage:** arms that appear anywhere in an entry's files.
 
-**Classification, published in Deliverable 1.** Every arm is classified, **at protocol 30**, as *in ledgers*,
-*rejected by core* or *not in meta*. Arms that occur only in older history are classified *historical* (e.g.
-inflation results, `LedgerCloseMeta` v0, older `TransactionMeta` versions). They are mined where history has them,
-and they are reported separately rather than counted in the targets below. Every arm excluded from *in ledgers*
-carries its evidence (a negative probe or a pinned stellar-core source reference), so the denominator can be audited.
+**Coverage report, published in Deliverable 1.** The report lists every arm at protocol 30 with the entries that
+contain it, by pattern and incidentally, and is regenerated in CI. It is a measurement, not an acceptance target,
+except for the protocol 21-30 arms below. Those 38 arms are classified, **at protocol 30**, as *in ledgers*,
+*rejected by core* or *not in meta*, and each one excluded from *in ledgers* carries its evidence (a negative probe or
+a pinned stellar-core source reference). Arms that occur only in older history (e.g. inflation results,
+`LedgerCloseMeta` v0) are mined where history has them and marked *historical*.
 
 Release targets:
-- at least 50 entries;
+- every ledger pattern RFP §3 names, and every §7 sighting that has a ledger shape, has an entry (tier A);
 - **pattern coverage of 100%** of the arms added in protocols 21-30 that are *in ledgers* at protocol 30;
-- **incidental coverage of at least 90%** of all arms that are *in ledgers* at protocol 30;
 - **every CAP** in the per-CAP view has at least one pattern entry, or a documented "no reader-visible shape" with
   its evidence.
 
-The entries fall into three tiers:
+We expect about 50 entries, in three tiers. The count is an estimate, not a target:
 
 | Tier | What | Entries |
 | --- | --- | --- |
 | A. Known bugs | every RFP-named ledger pattern and our own production cases (table below), and every §7 sighting that has a ledger shape (sightings table below) | ~28 |
 | B. Protocol 21-30 arms | CAP-77 freeze results (the three apply-time `*_TRUSTLINE_FROZEN` codes; `txFROZEN_KEY_ACCESSED` is normally rejected at validation and is recorded as a negative probe), upgrade ledgers carrying the new `ConfigSettingEntry` arms, CAP-67 `SCAddress` arms, CAP-71 credentials (V2 and with-delegates arms), CAP-85 external executable references, CAP-83/CAP-88 empty-transaction-set headers, CAP-84 muxed contract address, the first ledgers carrying the protocol 28 and 30 header variants, and the golden entries | ~14 |
-| C. Sweep | about 8 generated ledgers. Each holds one failing target transaction per result code of a group of operations, listed as separate `targets[]` with their own expected result. Plus a few mainnet ledgers chosen to raise incidental coverage. | ~8 entries, ~200 targets |
+| C. Sweep | a few generated ledgers. Each holds one failing target transaction per result code of a group of commonly indexed operations (payments, offers, trustlines, Soroban invocations), listed as separate `targets[]` with their own expected result. | ~8 |
 
 Tier A patterns:
 
@@ -260,7 +260,7 @@ Tier A patterns:
 | wallet-backend #716 (truncated addresses, three producers) | #716 was closed without a linked fix commit. Its Soroban operation-source producer was fixed by #753 and is the harness acceptance pair. Its SEP-41 muxed `ScAddress` producer is the muxed SAC recipient entry. Its `P…` signer producer is #729's entry. |
 | wallet-backend #753 (four indexer fixes) | its muxed-source fix is #716's acceptance pair. The other three are triaged in Deliverable 1 and each gets an entry if it has a ledger shape. |
 | stellar-etl #460 (P23+ event and effect gaps) | the CAP-67 and CAP-73 entries |
-| stellar-etl #454 (about 50 issues from one audit) and #470 (Protocol 28 epic) | triaged issue by issue in Deliverable 1: each issue is mapped to an entry, an input vector or "out of scope" with a reason, and the mapping is published |
+| stellar-etl #454 (about 50 issues from one audit) and #470 (Protocol 28 epic) | reviewed for issues that have a ledger shape; those become corpus entries or input vectors |
 | henyey #3941 (bucket-entry parse failure) | out of scope: bucket entries are not part of `LedgerCloseMeta` |
 | rs-stellar-xdr #581, #598 (VecM limits) | entries at the maximum valid length; SDK input vectors over it |
 | rs-stellar-xdr #604 (xdr-json schemas) | out of scope: a JSON-schema generation issue, not a ledger shape |
@@ -270,9 +270,9 @@ Tier A patterns:
 | js-stellar-sdk #1823 (non-UTF-8 strings) | mined entry if one exists; otherwise SDK input vector |
 | js-xdr #165 (nine XDR validation issues) | SDK input vectors |
 
-The coverage report shows every target with its protocol, CAP, class, and the entries covering it by pattern and
-incidentally. CI regenerates it on every pull request. Uncovered arms are ranked for new entries by known bugs, then
-by mainnet rarity, using an arm-frequency count over the public stellar-etl dataset.
+The coverage report shows every target with its protocol, CAP, class where classified, and the entries covering it
+by pattern and incidentally. CI regenerates it on every pull request. Uncovered arms tied to a known bug are first in
+line for new entries.
 
 ## 5. Generator
 
@@ -296,11 +296,12 @@ protocol-30 `…_EMPTY_TX_SET_MS` arm under protocol 30.
 
 Topologies:
 - **one validator** for almost every pattern (Deliverable 1);
-- **several validators** for patterns that only arise from consensus (Deliverable 3). For the CAP-83 empty
-  transaction set, we reproduce the condition CAP-83 describes: during nomination, one validator does not receive
-  the proposed transaction set in time, and the network votes to close the ledger without it. The harness induces
-  this by delaying tx-set delivery between validators. Where generation fails, the stellar-core golden captured with
-  CAP-83 (§4.3) is used. A synthetic entry is the last resort, and it does not count toward pattern coverage.
+- **several validators**, best effort, for patterns that only arise from consensus (Deliverable 3). The one we know
+  of is the CAP-83 empty transaction set. Its delivered entry is the stellar-core golden captured with CAP-83
+  (§4.3). We also try to generate one by reproducing the condition CAP-83 describes: during nomination, one validator
+  does not receive the proposed transaction set in time, and the network closes the ledger without it. If that works,
+  the generated ledger is added next to the golden. A synthetic entry is the last resort, and it does not count
+  toward pattern coverage.
 
 For each pattern the generator:
 1. funds fresh accounts from the private network's genesis root account;
@@ -410,8 +411,8 @@ the corpus tests for unbounded memory growth in the indexer, which the RFP names
 The harness itself streams one entry at a time and holds no corpus-sized state.
 
 **Reducing a halt to a minimal entry.** A sweep ledger or a mined mainnet ledger holds many target transactions. If
-the indexer halts on one, the halt can't be attributed from the ledger alone. The harness then regenerates each
-suspect target as a single-target ledger on the private network and reruns them, so every finding has a minimal
+the indexer halts on one, the halt can't be attributed from the ledger alone. During triage we regenerate the
+suspect targets as single-target ledgers on the private network and rerun them, so every finding has a minimal
 reproducing entry, as the RFP requires.
 
 **Reference adapter: wallet-backend.** Already prototyped in `sighting-729/`. It:
@@ -518,10 +519,10 @@ narrowed instead.
 The guide is written for developers.stellar.org. It follows the RFP's fixed outline (items 1–4 and 6) and adds one
 section from our own experience (item 5):
 1. which transaction fields stellar-core validates (signatures, sequence numbers, fees, time bounds) and which it
-   passes through (memos, Soroban auth trees, muxed IDs). This is a field-by-field table over the fields of
-   `TransactionEnvelope`, its operations and its Soroban data, giving the stage (validation, apply or Soroban host)
-   and the evidence, checked against the manifest. Fields an indexer actually reads (sources, memos, operation
-   bodies, auth entries, muxed IDs) are backed by probes first;
+   passes through (memos, Soroban auth trees, muxed IDs). This is a field-by-field table over the fields an indexer
+   reads: transaction and operation sources (including muxed IDs), sequence numbers, fees, time bounds, signatures,
+   memos, the account, asset and amount fields of operation bodies, and Soroban auth entries and footprints. Each row
+   gives the stage (validation, apply or Soroban host) and its evidence, and is checked against the manifest;
 2. recommended depth and size caps, each derived from the limit it protects against. For example, the nesting depth
    for `ScVal` follows the XDR depth limit that rs-stellar-xdr and the Soroban host enforce at the pinned version;
 3. deriving participants from the meta: ledger-entry changes and fee processing, with worked examples from the
@@ -547,10 +548,11 @@ merging it is the docs maintainers' call.
   - regeneration of entries whose generator changed;
   - the harness against wallet-backend, with per-entry limits;
   - the conformance runner against all three SDKs.
-- **Nightly:** regeneration of every generated entry under both passphrases, including the multi-validator patterns.
+- **Nightly:** regeneration of every generated entry under both passphrases.
 - A **GitHub Action** lets any indexer or SDK run the corpus in its own CI. It is the cheapest way for a third-party
   indexer to adopt the kit.
-- **Adoption starts with SDF's own pipeline:** we open a pull request adding the corpus check to wallet-backend's CI.
+- **Adoption starts with SDF's own pipeline:** we offer wallet-backend's maintainers the corpus check for their CI,
+  as a pull request if they want one.
 - Releases are tagged; corpus releases are versioned by the newest protocol covered.
 
 ## 11. License, infrastructure and scope
@@ -573,8 +575,8 @@ repositories from day one, with regular status updates to SCF.
 - There is one reference adapter (wallet-backend); others can be added through the documented interface.
 - The Galexie data-lake input comes first; a mock RPC `getLedgers` input is later work.
 - Findings are filed upstream with a reproducing entry, not fixed by us.
-- Coverage targets are measured on arms that occur in closed ledgers at protocol 30. Arms core rejects before a
-  ledger are recorded as negative probes; historical-only arms are reported separately.
+- Arm coverage across all of `LedgerCloseMetaBatch` is reported, not targeted. The only arm-level target is the
+  protocol 21-30 arms that occur in closed ledgers at protocol 30.
 - Sightings that are not ledger shapes are out of scope for the corpus (sightings table, §4.4).
 
 ## 12. Findings and disclosure
@@ -600,13 +602,15 @@ maintenance if it falls after delivery. Medium and low findings are filed public
 
 ## 13. Maintenance and protocol upgrades
 
-Our team maintains the kit for 12 months after the production release, with one dedicated maintainer:
-- **Each new CAP:** corpus entries for every CAP that ships in that window, including the first protocol upgrade
-  after delivery.
-- **Each protocol on testnet:** the harness and conformance runner run over the new protocol's ledgers before the
-  mainnet vote, with findings filed upstream.
+Our team maintains the kit through the first protocol upgrade after the production release, as the RFP asks:
+- **New CAPs:** corpus entries for the CAPs that upgrade ships.
+- **On testnet:** the harness and conformance runner run over the new protocol's ledgers before the mainnet vote,
+  with findings filed upstream.
 - **Withheld entries:** published once their fix is released.
-- **Issues:** triaged within 10 business days.
+- **Issues:** triaged as they come in.
+
+After that upgrade we continue on a best-effort basis. The corpus, manifest tool and generator are documented, so
+anyone can add entries for later CAPs.
 
 ## 14. Deliverables and evidence
 
