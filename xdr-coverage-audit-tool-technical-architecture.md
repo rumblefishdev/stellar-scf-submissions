@@ -101,7 +101,8 @@ Already implemented in the evidence repo (`corpus/entries/cap-00NN/<id>/`):
 
 Golden entries (§4.3) keep stellar-core's own file as canonical: a stream of length-prefixed `LedgerCloseMeta`
 records, including the ledgers before the target that set up its state. A converter writes the same ledgers as
-Galexie `LedgerCloseMetaBatch` objects for the harness and the runner.
+Galexie `LedgerCloseMetaBatch` objects for the harness and the runner; the harness ingests the setup ledgers before
+the target (§6).
 
 ### 4.2 Manifest
 
@@ -117,14 +118,15 @@ hand-written inputs are:
 
 The table below is the **target schema** for the release. The draft schema in the evidence repo
 (`corpus/manifest.schema.json`, JSON Schema 2020-12) already has most of it, including `accepted` and per-field
-`core_validation[]` records with their evidence. It differs in three places, all planned for Deliverable 1:
+`core_validation[]` records with their evidence. It differs mainly in these places, all reconciled in Deliverable 1:
 - `targets[]`, `pattern_targets[]` and the `decoded`/`network` provenance marks are not there yet;
-- `source.kind` and `network` have no `golden` value yet;
-- `check_lcm_golden` is a path string, not the record described here.
+- `source.kind` still has a `local` value and no `golden` value; `network` has no `golden` value;
+- `check_lcm_golden` is a path string (null in all five entries), not the record described here;
+- it has draft-only fields (e.g. generator and generation-record references) that the release folds into `source`.
 
 | Field | Meaning |
 | --- | --- |
-| `id`, `title`, `cap[]`, `sep[]` | entry identity, title and tags |
+| `id`, `title`, `cap[]`, `sep[]` | entry identity, title and tags. A pattern that predates the CAP process carries `pre-CAP` with the protocol it dates from, so every entry has a CAP tag. |
 | `pattern` | `{ id, description }`. The pattern id selects the typed `extra` block and its invariants. |
 | `protocol.introduced_in` / `protocol.ledger` | where the pattern can first occur / protocol of the captured ledger |
 | `network`, `network_passphrase` | `pubnet`, `testnet`, `futurenet`, `local`, `golden` or `other`, with the exact passphrase. Private-network entries are `local` and carry the passphrase they were generated with. Golden entries carry stellar-core's test passphrase. |
@@ -148,13 +150,13 @@ The table below is the **target schema** for the release. The draft schema in th
 | --- | --- | --- |
 | sha256 of every file equals the manifest | the files are the captured ones | CI, every pull request |
 | decode → encode is byte-exact with rs-stellar-xdr | a reference decoder reads and writes the entry losslessly | CI, every pull request |
-| agreement with stellar-core's `--check-lcm` goldens (method below) | the corpus matches what core itself treats as correct | CI, every pull request |
+| agreement with stellar-core's `--check-lcm` goldens (method below), against goldens vendored at the pinned stellar-core commit | the corpus matches what core itself treats as correct | CI, every pull request (no stellar-core build in CI) |
 | file consistency: the `.zst` decompresses to the `.xdr`; envelope hash = tx hash; every envelope maps to a result | the entry's files agree with each other | CI, every pull request |
 | manifest = fresh decode | no expected value was typed or edited by hand | CI, every pull request |
 | `network` fields agree between rs-stellar-xdr and a second decoder (go-stellar-sdk's xdr) | network-recorded expected values don't depend on one decoder | CI, every pull request |
 | manifest validates against the schema | the schema is enforceable | CI, every pull request |
 | every field in the guide's table has at least one `core_validation` record, and all records agree with the table | the guide and the corpus can't drift apart, and a field with no evidence shows up as a gap | CI, every pull request |
-| regenerating a generated entry, offline, keeps the same pattern and core verdicts | the generator reliably produces the pattern | CI: entries whose generator changed, on every pull request; all entries under both passphrases, nightly |
+| regenerating a generated entry, offline, keeps the same pattern and core verdicts | the generator reliably produces the pattern | CI: entries whose generator changed, on every pull request; all entries under both passphrases, weekly and at each release |
 
 **Agreement with stellar-core's goldens.** stellar-core records the LedgerCloseMeta its own unit tests produce
 (`test-lcm-current/`, `test-lcm-next/`) and compares new runs against them with `--check-lcm`. Before writing a
@@ -164,18 +166,20 @@ passphrase, so a ledger we mine or generate is never byte-for-byte comparable wi
 1. **Golden entries.** We import stellar-core goldens as corpus entries (`source.kind = golden`), taken at a pinned
    stellar-core commit. The release contains at least one. The first candidates:
    - `test-lcm-current/FrozenLedgerKeysTests/`, for the CAP-77 freeze patterns, which are otherwise hard to produce;
-   - the CAP-83 empty-transaction-set ledger that stellar-core's own HerderTests captured
-     (`test-lcm/HerderTests/370dd5e0af5cfa8d.xdr`, added with CAP-83 in commit `6bd15f5f02`).
-   CI checks that each golden entry still matches stellar-core's golden for the same test **at the next pinned
-   stellar-core release**, using core's own comparison (diagnostics zeroed, sorted copies). A difference means core's
-   output for that scenario changed. The entry is then reviewed and updated, and indexers are tested against both
-   versions.
+   - the CAP-83 empty-transaction-set ledger that stellar-core's HerderTests captured
+     (`test-lcm/HerderTests/370dd5e0af5cfa8d.xdr`, added with CAP-83 in commit `6bd15f5f02`). Core no longer
+     captures this test on master, so this is a **historical golden**: imported from that commit and not re-checked.
+   When we move to the next pinned stellar-core release, each golden entry whose test core still captures is
+   compared with core's golden for the same test, using core's own comparison (diagnostics zeroed, sorted copies).
+   A difference means core's output for that scenario changed. The entry is then reviewed and updated, and indexers
+   are tested against both versions.
 2. **Structural agreement for other entries.** A mined or generated entry is matched to a golden when their
    `pattern_targets[]` overlap. For each overlapping coverage target, the two must agree on structure, not on values:
    - the same discriminant path from the ledger root to the arm;
    - the same result codes for the operations that produce it;
    - the same ledger-entry change kinds (created, updated, removed, restored, state) per ledger-entry type.
-   Accounts, amounts and hashes differ by design and are not compared.
+   Accounts, amounts and hashes differ by design and are not compared. An entry whose `pattern_targets[]` overlap no
+   golden is marked "no published golden"; the RFP asks for agreement only where goldens are published.
 
 The same comparison (diagnostics zeroed, sorted copies, never applied to the canonical file) is how we check that a
 re-export of a ledger equals its captured file.
@@ -199,7 +203,8 @@ protocol release).
 
 Findings from the five sample entries:
 - they already contain 123 arms (25%), mostly through incidental content of their ledgers, not their targets;
-- of the 376 arms not yet contained, 216 are result codes. Failed operations land in ledgers and can be generated;
+- of the 376 arms not yet contained, about 230 are operation and transaction result codes. Failed operations land in
+  ledgers and can be generated;
   some transaction-level codes are rejected before a ledger and belong in `negative_probes`;
 - 27 of the 38 arms added in protocols 21-30 are not yet contained. That is the protocol-upgrade class of failure
   (§2.4).
@@ -210,18 +215,17 @@ we report two numbers:
 - **incidental coverage:** arms that appear anywhere in an entry's files.
 
 **Coverage report, published in Deliverable 1.** The report lists every arm at protocol 30 with the entries that
-contain it, by pattern and incidentally, and is regenerated in CI. It is a measurement, not an acceptance target,
-except for the protocol 21-30 arms below. Those 38 arms are classified, **at protocol 30**, as *in ledgers*,
+contain it, by pattern and incidentally, and is regenerated in CI. Percentages are measurements, not acceptance
+targets. The 38 arms added in protocols 21-30 are classified, **at protocol 30**, as *in ledgers*,
 *rejected by core* or *not in meta*, and each one excluded from *in ledgers* carries its evidence (a negative probe or
 a pinned stellar-core source reference). Arms that occur only in older history (e.g. inflation results,
 `LedgerCloseMeta` v0) are mined where history has them and marked *historical*.
 
 Release targets:
-- every ledger pattern RFP §3 names, and every §7 sighting that has a ledger shape, has an entry (tier A);
-- **pattern coverage of 100%** of the arms added in protocols 21-30 that are *in ledgers* at protocol 30. Arms that
-  only arise from a consensus failure (the empty-transaction-set header arms) count as covered by a stellar-core
-  golden entry. If no golden exists and best-effort generation (§5) fails, such an arm is reported as a documented
-  gap and excluded from this target;
+- every ledger pattern RFP §3 names, and every §7 sighting the table below maps to an entry, has one (tier A);
+- **every arm added in protocols 21-30** has a pattern entry, or a documented reason it has none, with its evidence:
+  rejected by core, not in meta, or consensus-only with no stellar-core golden (empty-transaction-set headers count
+  through a golden entry, §4.3, and best-effort generation, §5). The share covered by entries is reported;
 - **every CAP that added an arm in protocols 21-30, and every CAP the RFP names**, has at least one pattern entry, or
   a documented "no reader-visible shape" with its evidence.
 
@@ -229,9 +233,9 @@ We expect about 50 entries, in three tiers. The count is an estimate, not a targ
 
 | Tier | What | Entries |
 | --- | --- | --- |
-| A. Known bugs | every RFP-named ledger pattern and our own production cases (table below), and every §7 sighting that has a ledger shape (sightings table below) | ~28 |
+| A. Known bugs | every RFP-named ledger pattern and our own production cases (table below), and the §7 sightings the sightings table maps to an entry | ~28 |
 | B. Protocol 21-30 arms | CAP-77 freeze results (the three apply-time `*_TRUSTLINE_FROZEN` codes; `txFROZEN_KEY_ACCESSED` is normally rejected at validation and is recorded as a negative probe), upgrade ledgers carrying the new `ConfigSettingEntry` arms, CAP-67 `SCAddress` arms, CAP-71 credentials (V2 and with-delegates arms), CAP-85 external executable references, CAP-83/CAP-88 empty-transaction-set headers, CAP-84 muxed contract address, the first ledgers carrying the protocol 28 and 30 header variants, and the golden entries | ~14 |
-| C. Sweep | a few generated ledgers. Each holds one failing target transaction per result code of a group of commonly indexed operations (payments, offers, trustlines, Soroban invocations), listed as separate `targets[]` with their own expected result. | ~8 |
+| C. Sweep (optional) | a few generated ledgers. Each holds one failing target transaction per result code of a group of commonly indexed operations (payments, offers, trustlines, Soroban invocations), listed as separate `targets[]` with their own expected result. | ~8 |
 
 Tier A patterns:
 
@@ -240,7 +244,7 @@ Tier A patterns:
 | signed-payload signer (`P…`, 40–100 bytes) | CAP-40, SEP-23 | mined (done) | wallet-backend #729 halt |
 | SAC transfer to a muxed recipient, `to_muxed_id` event | CAP-27, CAP-67 | generated (done) | wallet-backend #716, its SEP-41 muxed `ScAddress` producer |
 | muxed classic payment with ids 2^63+1, 2^53+1 and 2^64−1 | CAP-27 | generated (done) | readers that keep muxed ids as floats or truncate `M…`; the ledger side of the RFP's "IDs that decode to a different ID" pattern |
-| failed `ManageSellOffer` naming an offer ID above 2^53 | — | generated | the ledger side of js-stellar-sdk #1785 (offer IDs that decode to a different ID) |
+| failed `ManageSellOffer` naming an offer ID above 2^53 | pre-CAP (protocol 1) | generated | the ledger side of js-stellar-sdk #1785 (offer IDs that decode to a different ID) |
 | muxed source on `ExtendFootprintTtl` / `RestoreFootprint` (valid at every protocol; core rejects a muxed source only on `InvokeHostFunction`, from protocol 25 in consensus, which is recorded as a negative probe) | CAP-27 | generated | wallet-backend #716's Soroban operation-source producer. Before #753, this halts ingestion with a duplicate primary key. |
 | pool whose issuers sort differently by bytes and by strkey text | CAP-38 | generated (done) | js-stellar-sdk #1766 |
 | ScMap whose network key order differs from a JS string sort | CAP-46 | generated | js-stellar-sdk #1766 (map-key part) |
@@ -251,7 +255,7 @@ Tier A patterns:
 | per-operation contract events next to byte-identical diagnostic events | CAP-67 | mined | our own: 83% of Soroban txs lost events; 2.5× inflation from counting diagnostics |
 | claimable balance ID `B…` (58 chars) and muxed `M…` (69 chars) in address columns | CAP-23, CAP-27 | mined | our own: backfill stopped on a 56-character column |
 | SAC event emitted by a non-SAC contract with an asset-like topic | CAP-46 | generated | our own: any contract could add rows to USDC's history |
-| non-UTF-8 bytes in XDR string fields (e.g. text memos) | — | mined first; otherwise an SDK input vector | js-stellar-sdk #1823 |
+| non-UTF-8 bytes in XDR string fields (e.g. text memos) | pre-CAP (protocol 1) | mined first; otherwise an SDK input vector | js-stellar-sdk #1823 |
 
 **The RFP's §7 sightings and where each is covered:**
 
@@ -263,7 +267,7 @@ Tier A patterns:
 | wallet-backend #716 (truncated addresses, three producers) | #716 was closed without a linked fix commit. Its Soroban operation-source producer was fixed by #753 and is the harness acceptance pair. Its SEP-41 muxed `ScAddress` producer is the muxed SAC recipient entry. Its `P…` signer producer is #729's entry. |
 | wallet-backend #753 (four indexer fixes) | its muxed-source fix is #716's acceptance pair. The other three are triaged in Deliverable 1 and each gets an entry if it has a ledger shape. |
 | stellar-etl #460 (P23+ event and effect gaps) | the CAP-67 and CAP-73 entries |
-| stellar-etl #454 (about 50 issues from one audit) and #470 (Protocol 28 epic) | reviewed for issues that have a ledger shape; those become corpus entries or input vectors |
+| stellar-etl #454 (about 50 issues from one audit) and #470 (Protocol 28 epic) | best effort, outside the release targets: reviewed for issues that have a ledger shape, and any found become entries or input vectors |
 | henyey #3941 (bucket-entry parse failure) | out of scope: bucket entries are not part of `LedgerCloseMeta` |
 | rs-stellar-xdr #581, #598 (VecM limits) | entries at the maximum valid length; SDK input vectors over it |
 | rs-stellar-xdr #604 (xdr-json schemas) | out of scope: a JSON-schema generation issue, not a ledger shape |
@@ -300,8 +304,8 @@ protocol-30 `…_EMPTY_TX_SET_MS` arm under protocol 30.
 Topologies:
 - **one validator** for almost every pattern (Deliverable 1);
 - **several validators**, best effort, for patterns that only arise from consensus (Deliverable 3). The one we know
-  of is the CAP-83 empty transaction set. Its delivered entry is the stellar-core golden captured with CAP-83
-  (§4.3). We also try to generate one by reproducing the condition CAP-83 describes: during nomination, one validator
+  of is the CAP-83 empty transaction set. Its delivered entry is the historical stellar-core golden captured
+  with CAP-83 (§4.3). We also try to generate one by reproducing the condition CAP-83 describes: during nomination, one validator
   does not receive the proposed transaction set in time, and the network closes the ledger without it. If that works,
   the generated ledger is added next to the golden. A synthetic entry is the last resort, and it does not count
   toward pattern coverage. §4.4 sets out how these arms count toward the coverage target.
@@ -320,10 +324,9 @@ network uses accelerated test settings (short ledger close times and checkpoint 
 --local` does), so the archive checkpoint arrives quickly.
 
 **Safety with the mainnet passphrase.** stellar-core derives the genesis root key from the passphrase, so the private
-network's root key is the same as mainnet's root key, which anyone can already derive. On mainnet that account's
-master key has weight 0 and it has no other signers, so any transaction signed with it fails with `txBAD_AUTH`.
-Accounts created on the private network don't exist on mainnet. Together with the isolation above, running the
-private network adds no risk.
+network's root key is the same as mainnet's root key, which anyone can already derive. Its secret key is therefore
+already public, and accounts created on the private network don't exist on mainnet. Together with the isolation above,
+running the private network adds no risk.
 
 **Testnet and mainnet history** are used only to mine patterns that already happened there, and as an optional
 cross-check, outside CI, that a generated pattern also occurs on a public network.
@@ -354,8 +357,9 @@ A mock RPC `getLedgers` endpoint as a *ledger source* is a later adapter input, 
 **One entry per run.** Corpus entries are single ledgers from different networks and passphrases, so each entry runs
 in a fresh, isolated indexer instance: its own database, its own bucket, the entry's network passphrase, and only
 that ledger. State from earlier ledgers that the indexer needs (accounts, trustlines, contract instances) is seeded
-through the adapter's `Seed` step, from the entry's own ledger-entry changes. Runs are independent, so CI runs them
-in parallel.
+through the adapter's `Seed` step, from the entry's own ledger-entry changes. Golden entries are the exception: their
+setup ledgers are ingested before the target ledger, as core produced them. Runs are independent, so CI runs them in
+parallel.
 
 **Adapter interface.**
 
@@ -388,25 +392,27 @@ indexer should store:
   plus the transaction and operation sources;
 - state changes are the meta's ledger-entry changes, by kind;
 - events are the meta's contract events, without diagnostic events.
-Each adapter maps its indexer's tables onto `Observation`, and declares which fields its indexer doesn't store at
-all, so they are skipped rather than failed. That mapping is the part a new indexer has to write.
+Each adapter maps its indexer's tables onto `Observation`. It also declares which fields its indexer doesn't store
+at all, and which transactions it is expected to store (all of them for wallet-backend; for example only those
+touching tracked accounts for a filtering indexer). Undeclared fields are skipped rather than failed, and verdicts
+consider only the expected transactions. That mapping is the part a new indexer has to write.
 
 **Verdicts.** The harness serves the data lake, so its S3 access log shows whether the indexer fetched the entry's
 ledger. That, plus a start-up health probe (process up, database migrated), separates indexer failures from harness
 failures:
-- **pass:** every transaction of the ledger is stored, and each target matches the reference projection;
+- **pass:** every expected transaction of the ledger is stored, and each target matches the reference projection;
 - **mishandled:** a target is stored, but values are missing or wrong;
-- **dropped:** other transactions of the ledger are stored, and a target is not. This is how silent drops are caught,
+- **dropped:** other expected transactions of the ledger are stored, and a target is not. This is how silent drops are caught,
   with or without anything in the indexer's log;
-- **halted:** the indexer fetched the ledger but stored nothing from it, or it crashed, ran out of its memory limit or
+- **halted:** the indexer fetched the ledger but stored none of its expected transactions, or it crashed, ran out of its memory limit or
   exceeded its time limit on that ledger. This is the ingestion-halt class (#729, #753), and it is always a finding,
   rated critical;
 - **error:** the health probe failed or the indexer never fetched the ledger, so the harness itself failed. The run
   is repeated and never filed.
 
 Exit codes and logs are recorded in the findings report as supporting evidence, but never decide the verdict (§2.3).
-The evidence repo's `sighting-729/repro.sh` predates this rule. It reports `dropped` when no transaction is stored and
-the #729 error is in the log. Under this design, that same run is `halted`.
+The evidence repo's `sighting-729/repro.sh` already reports `halted` for #729. Until the harness serves the data lake
+itself, it uses the #729 error in the log as its proof that the indexer reached the ledger.
 
 **Limits on the indexer under test.** Each entry runs with a per-entry memory limit (1 GiB) and time limit
 (120 seconds) on the indexer's container. Exceeding either is a `halted` verdict with the cause recorded. This is how
@@ -443,7 +449,10 @@ the fixed ones:
 | #716, Soroban operation-source producer | `f8e5786d` → `bb0b162b` (PR #753) | the muxed `ExtendFootprintTtl` / `RestoreFootprint` source entry | `halted` (duplicate primary key) → `pass` |
 
 #716 itself was closed without a linked fix commit, and #753 fixed one of its three producers with a different
-symptom at the pre-fix commit (a halt, not a truncation). That is why this pair is #716's acceptance pair.
+symptom at the pre-fix commit (a halt, not a truncation). That is why this pair is #716's acceptance pair. The
+operation is valid today: stellar-core's `TransactionFrame::validateSorobanMemo` rejects a muxed source only on
+`InvokeHostFunction`, and #753's description states the same and describes the halt (duplicate primary key,
+SQLSTATE 23505). We raise this substitution with SCF at kickoff.
 
 ## 7. SDK conformance runner
 
@@ -512,15 +521,16 @@ three rules:
 
 Every rule ships with seeded violations in Go.
 
-**Acceptance.** The linter flags every seeded violation and reports nothing on current wallet-backend. If it finds a
-real issue in current wallet-backend, that is filed upstream as a finding (§12) and recorded in a baseline file, so
-the clean run stays meaningful. At most five findings may be baselined; more means the rule is too broad and is
-narrowed instead.
+**Acceptance.** The linter flags every seeded violation, has its own test suite in CI, and reports no finding on
+current wallet-backend that hasn't been filed upstream. A real issue it finds there is filed as a finding (§12) and
+recorded in a baseline file, so the clean run stays meaningful. A rule whose findings turn out to be mostly false
+positives is narrowed rather than baselined. The report lists the wallet-backend functions each rule matched, so a
+clean run can't come from matching nothing.
 
 ## 9. Indexer-hardening guide
 
-The guide is written for developers.stellar.org. It follows the RFP's fixed outline (items 1–4 and 6) and adds one
-section from our own experience (item 5):
+The guide is written for developers.stellar.org. It follows the RFP's fixed outline (items 1–5), with one appendix
+from our own experience:
 1. which transaction fields stellar-core validates (signatures, sequence numbers, fees, time bounds) and which it
    passes through (memos, Soroban auth trees, muxed IDs). This is a field-by-field table over the fields an indexer
    reads: transaction and operation sources (including muxed IDs), sequence numbers, fees, time bounds, signatures,
@@ -532,10 +542,11 @@ section from our own experience (item 5):
    corpus;
 4. muxed and signed-payload handling, including SEP-23 strkey forms and column sizes (`M…` 69 chars, `B…` 58, `P…`
    up to 165);
-5. surviving protocol upgrades: pin tracking, and decoding a new protocol's ledger before the vote. This is the
-   watcher we run in production, which opens an issue whenever our pinned `stellar-xdr` lags the protocol core
-   already supports;
-6. a self-audit checklist mirroring the three linter rules, for indexers in other languages.
+5. a self-audit checklist mirroring the three linter rules, for indexers in other languages.
+
+*Appendix:* surviving protocol upgrades: pin tracking, and decoding a new protocol's ledger before the vote. This is
+the watcher we run in production, which opens an issue whenever our pinned `stellar-xdr` lags the protocol core
+already supports.
 
 Publication requires review by a stellar-core or platform engineer. We request that review as soon as the draft,
 with the field table, exists, and address every comment. If no reviewer is assigned within two weeks of the request,
@@ -545,13 +556,13 @@ merging it is the docs maintainers' call.
 ## 10. CI, release and adoption
 
 - Every tool (generator, harness, conformance runner, linter) has its own test suite.
-- **On every pull request** in the tools' repos, offline, within a 20-minute budget:
-  - round-trip and manifest freshness;
-  - schema and the second-decoder cross-check;
+- **On every pull request** in the tools' repos, offline:
+  - round-trip, manifest freshness, schema and the second-decoder cross-check, over the whole corpus;
   - regeneration of entries whose generator changed;
-  - the harness against wallet-backend, with per-entry limits;
-  - the conformance runner against all three SDKs.
-- **Nightly:** regeneration of every generated entry under both passphrases.
+  - the harness against wallet-backend and the conformance runner against all three SDKs, on the changed entries
+    plus a fixed smoke set (the five sample entries).
+- **Nightly:** the harness and the conformance runner over the whole corpus.
+- **Weekly and at each release:** regeneration of every generated entry under both passphrases.
 - A **GitHub Action** lets any indexer or SDK run the corpus in its own CI. It is the cheapest way for a third-party
   indexer to adopt the kit.
 - **Adoption starts with SDF's own pipeline:** we offer wallet-backend's maintainers the corpus check for their CI,
@@ -570,17 +581,19 @@ merging it is the docs maintainers' call.
 - pinned SDK containers.
 
 Everything is built on the current stable Stellar stack (stellar-xdr 30, current js-stellar-sdk and go-stellar-sdk
-releases) and bumped with each protocol release. There is no telemetry and no user tracking. Work happens in public
-repositories from day one, with regular status updates to SCF.
+releases) and bumped with each protocol release. There is no telemetry and no user tracking.
+
+**Public building.** Work happens in public repositories from day one. Every two weeks we post a public status update
+in the main repository's GitHub Discussions, and share it in the Slack channel with SDF.
 
 **Scope limits.**
 - The linter covers Go only; other languages use the guide's checklist.
 - There is one reference adapter (wallet-backend); others can be added through the documented interface.
 - The Galexie data-lake input comes first; a mock RPC `getLedgers` input is later work.
 - Findings are filed upstream with a reproducing entry, not fixed by us.
-- Arm coverage across all of `LedgerCloseMetaBatch` is reported, not targeted. The only arm-level target is the
-  protocol 21-30 arms that occur in closed ledgers at protocol 30; consensus-only arms count through golden entries
-  (§4.4).
+- Arm coverage is reported, not targeted. Every arm added in protocols 21-30 gets an entry or a documented reason
+  with evidence; consensus-only arms count through golden entries (§4.4).
+- stellar-etl #454 and #470 are reviewed for ledger shapes on a best-effort basis, outside the release targets.
 - Sightings that are not ledger shapes are out of scope for the corpus (sightings table, §4.4).
 
 ## 12. Findings and disclosure
@@ -596,7 +609,12 @@ repositories from day one, with regular status updates to SCF.
   - **low:** anything else;
 - the affected CAP and component.
 
-Every failure maps to a row. A private advisory counts as filed; the reviewer can verify it with SDF.
+Every failure maps to a row, with a minimal reproducing entry or input vector. A private advisory counts as filed;
+the reviewer can verify it with SDF.
+
+**Audit history.** None of our SDF-funded projects has had a third-party security audit. This kit runs offline, holds
+no keys or funds and has no hosted service, so we budget no audit; its security work is the disclosure process
+below.
 
 **Disclosure.** Ingestion-halting inputs are denial-of-service vectors against production indexers. Critical and
 high findings are reported privately first, through SDF's security reporting process, and to the affected
@@ -618,6 +636,15 @@ anyone can add entries for later CAPs.
 
 ## 14. Deliverables and evidence
 
+**Deliverables and timeline.** The grant application uses SCF's four tranches (10/20/30/40%); T0 is approval.
+
+| Deliverable | Due | Tranche | Contents |
+| --- | --- | --- | --- |
+| — | T0 | #0, $6,500 | mobilisation: product repositories from the evidence prototypes, CI |
+| 1 | T0 + 4 weeks | #1, $13,000 | known-bug corpus tier, offline single-validator generator, golden import, schema, coverage report, guide draft sent for review |
+| 2 | T0 + 8 weeks | #2, $19,500 | replay harness with stubs and adapter interface, wallet-backend adapter, conformance runner and SDK input vectors |
+| 3 | T0 + 13 weeks | #3, $26,000 | protocol 21-30 corpus tier and config upgrades, findings filed upstream, linter, guide ready to publish, release 1.0 |
+
 **Where each RFP deliverable is designed:**
 
 | RFP deliverable | Section |
@@ -637,13 +664,13 @@ anyone can add entries for later CAPs.
 | --- | --- | --- |
 | draft manifest schema | `corpus/manifest.schema.json` plus the generated `manifest.json` | CI: manifest = fresh decode |
 | 2–3 sample corpus entries | 5 entries: CAP-40 signed-payload signer (mined); muxed SAC recipient, muxed classic payment, issuer-order pool and ScMap key collision (generated) | all byte-exact round-trips |
-| reproduce one sighting | wallet-backend #729 from testnet ledger 4437357 via Galexie → local S3 → backfill | pre-fix: 0 of 12 txs stored, exit 0 (reported as `dropped` by the prototype; `halted` under §6); fixed: **pass** |
+| reproduce one sighting | wallet-backend #729 from testnet ledger 4437357 via Galexie → local S3 → backfill | pre-fix: 0 of 12 txs stored, exit 0, **halted**; fixed: **pass** |
 | *(extra)* | generic js-stellar-sdk conformance run over all 5 entries, 4 releases | #1766: 17.2.0 **mishandled**, **pass** from 17.2.1; #1789: 17.2.0 and 17.2.1 **mishandled**, **pass** from 17.3.0 |
 
 Observations made while building it:
-- stellar-core enforces its muxed-source and memo rule on `InvokeHostFunction` only, in consensus from protocol 25.
-  `ExtendFootprintTtl` and `RestoreFootprint` with a muxed source remain valid. This matches the analysis in
-  wallet-backend PR #753;
+- stellar-core enforces its muxed-source and memo rule on `InvokeHostFunction` only, in consensus from protocol 25
+  (`TransactionFrame::validateSorobanMemo` returns early for every other operation). `ExtendFootprintTtl` and
+  `RestoreFootprint` with a muxed source remain valid. This matches the analysis in wallet-backend PR #753;
 - Galexie re-exports of the same ledger are not byte-identical. Soroban diagnostic events carry timings, and in one
   case ledger-entry changes came out in a different order. So re-exports are compared the way stellar-core compares
   goldens (§4.3), and the captured file stays canonical;
